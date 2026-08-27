@@ -11,7 +11,7 @@
 
 class Vehicle;
 
-class CargoBayController final : public QObject
+class CargoBayController : public QObject
 {
     Q_OBJECT
     QML_NAMED_ELEMENT(CargoBay)

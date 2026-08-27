@@ -10,7 +10,7 @@
 class QNetworkReply;
 class Vehicle;
 
-class DispatcherClient final : public QObject
+class DispatcherClient : public QObject
 {
     Q_OBJECT
     QML_NAMED_ELEMENT(Dispatcher)
