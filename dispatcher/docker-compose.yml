@@ -1,0 +1,14 @@
+services:
+  dispatcher:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8088:8088"
+    environment:
+      FLYCAM_API_KEY: "${FLYCAM_API_KEY:-}"
+      FLYCAM_RETENTION_DAYS: "${FLYCAM_RETENTION_DAYS:-30}"
+    volumes:
+      - flycam_dispatcher_data:/data
+
+volumes:
+  flycam_dispatcher_data:

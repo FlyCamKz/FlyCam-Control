@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>FlyCam — диспетчерский центр</title>
+  <style>
+    :root { color-scheme: light; --blue:#0b68ad; --ink:#17212b; --muted:#66717d; --line:#dbe2e8; --bg:#f3f6f8; --ok:#16845b; --warn:#ce7a00; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; }
+    header { background:white; border-bottom:1px solid var(--line); padding:14px 24px; display:flex; gap:20px; align-items:center; justify-content:space-between; }
+    header h1 { margin:0; font-size:20px; }
+    header small { color:var(--muted); }
+    main { max-width:1500px; margin:auto; padding:20px; }
+    .grid { display:grid; grid-template-columns:repeat(4,minmax(170px,1fr)); gap:14px; }
+    .card { background:white; border:1px solid var(--line); border-radius:12px; padding:16px; box-shadow:0 2px 8px #2030400b; }
+    .metric { font-size:26px; font-weight:700; margin-top:8px; }
+    .muted { color:var(--muted); }
+    .section { margin-top:18px; }
+    .section h2 { margin:0 0 12px; font-size:17px; }
+    table { width:100%; border-collapse:collapse; }
+    th,td { padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
+    th { color:var(--muted); font-weight:600; }
+    .status { display:inline-flex; gap:7px; align-items:center; }
+    .dot { width:9px; height:9px; border-radius:50%; background:var(--warn); }
+    .dot.ok { background:var(--ok); }
+    form { display:grid; grid-template-columns:2fr 1fr 1fr 1fr auto; gap:8px; }
+    input,select,button { min-height:38px; border:1px solid var(--line); border-radius:8px; padding:7px 10px; font:inherit; }
+    button { background:var(--blue); color:white; border-color:var(--blue); cursor:pointer; font-weight:600; }
+    #connection { font-weight:600; }
+    #connection.error { color:#b22; }
+    @media(max-width:900px) { .grid { grid-template-columns:repeat(2,1fr); } form { grid-template-columns:1fr; } .table-wrap { overflow:auto; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div><h1>Satbayev University × FlyCam</h1><small>Drone Control Center · диспетчеризация</small></div>
+    <div><label>API-ключ <input id="apiKey" type="password" autocomplete="off"></label> <span id="connection">Подключение…</span></div>
+  </header>
+  <main>
+    <div class="grid">
+      <div class="card"><span class="muted">БПЛА на связи</span><div class="metric" id="vehicleCount">0</div></div>
+      <div class="card"><span class="muted">В полёте</span><div class="metric" id="flyingCount">0</div></div>
+      <div class="card"><span class="muted">Активные задания</span><div class="metric" id="missionCount">0</div></div>
+      <div class="card"><span class="muted">Последнее обновление</span><div class="metric" id="updatedAt">—</div></div>
+    </div>
+
+    <section class="section card">
+      <h2>БПЛА</h2>
+      <div class="table-wrap"><table><thead><tr><th>ID</th><th>Состояние</th><th>Режим</th><th>Координаты</th><th>Высота</th><th>Потери MAVLink</th><th>Отсек</th><th>Получено</th></tr></thead><tbody id="vehicles"></tbody></table></div>
+    </section>
+
+    <section class="section card">
+      <h2>Новое задание</h2>
+      <form id="missionForm">
+        <input name="name" required placeholder="Название задания">
+        <input name="origin" placeholder="Откуда">
+        <input name="destination" placeholder="Куда">
+        <input name="vehicleId" type="number" min="1" max="255" placeholder="ID БПЛА">
+        <button type="submit">Создать</button>
+      </form>
+    </section>
+
+    <section class="section card">
+      <h2>Задания</h2>
+      <div class="table-wrap"><table><thead><tr><th>ID</th><th>Название</th><th>Статус</th><th>БПЛА</th><th>Маршрут</th><th>Обновлено</th></tr></thead><tbody id="missions"></tbody></table></div>
+    </section>
+
+    <section class="section card">
+      <h2>События грузового отсека</h2>
+      <div class="table-wrap"><table><thead><tr><th>Время</th><th>БПЛА</th><th>Событие</th><th>Результат</th><th>Режим</th><th>Координаты</th></tr></thead><tbody id="events"></tbody></table></div>
+    </section>
+  </main>
+  <script>
+    const keyInput = document.querySelector('#apiKey');
+    keyInput.value = sessionStorage.getItem('flycamApiKey') || '';
+    keyInput.addEventListener('change', () => sessionStorage.setItem('flycamApiKey', keyInput.value));
+    const headers = () => keyInput.value ? {'X-API-Key':keyInput.value} : {};
+    const el = id => document.getElementById(id);
+    const td = value => { const cell=document.createElement('td'); cell.textContent=value ?? '—'; return cell; };
+    const ageOk = received => Date.now() - Date.parse(received) < 5000;
+
+    async function api(path, options={}) {
+      options.headers = {...headers(), ...(options.headers || {})};
+      const response = await fetch(path, options);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    }
+
+    function renderVehicles(vehicles) {
+      const body=el('vehicles'); body.replaceChildren();
+      for (const vehicle of vehicles) {
+        const row=document.createElement('tr');
+        const state=document.createElement('span'); state.className='status';
+        const dot=document.createElement('span'); dot.className='dot'+(ageOk(vehicle.receivedAt)?' ok':'');
+        state.append(dot, document.createTextNode(vehicle.flying?'В полёте':vehicle.armed?'Вооружён':'На земле'));
+        const stateCell=document.createElement('td'); stateCell.append(state);
+        const cargoState = !vehicle.cargoCommandedStateKnown
+          ? 'Нет данных'
+          : vehicle.cargoCommandedOpen ? 'Открыт (команда)' : 'Закрыт (команда)';
+        row.append(td(vehicle.vehicleId),stateCell,td(vehicle.flightMode),td(vehicle.latitude!=null?`${vehicle.latitude.toFixed(6)}, ${vehicle.longitude.toFixed(6)}`:'—'),td(vehicle.altitude!=null?vehicle.altitude.toFixed(1):'—'),td(vehicle.mavlinkLossPercent!=null?`${vehicle.mavlinkLossPercent.toFixed(1)} %`:'—'),td(cargoState),td(new Date(vehicle.receivedAt).toLocaleTimeString()));
+        body.append(row);
+      }
+      el('vehicleCount').textContent=vehicles.filter(v=>ageOk(v.receivedAt)).length;
+      el('flyingCount').textContent=vehicles.filter(v=>ageOk(v.receivedAt)&&v.flying).length;
+    }
+
+    function renderMissions(missions) {
+      const body=el('missions'); body.replaceChildren();
+      const statusLabels={planned:'Запланировано',assigned:'Назначено',in_progress:'Выполняется',completed:'Завершено',cancelled:'Отменено'};
+      for (const mission of missions) {
+        const row=document.createElement('tr');
+        const statusSelect=document.createElement('select');
+        for (const [value,label] of Object.entries(statusLabels)) {
+          const option=document.createElement('option'); option.value=value; option.textContent=label;
+          statusSelect.append(option);
+        }
+        statusSelect.value=mission.status;
+        statusSelect.addEventListener('change',async()=>{
+          statusSelect.disabled=true;
+          try {
+            await api(`/api/v1/missions/${mission.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:statusSelect.value})});
+            await refresh();
+          } catch (error) {
+            statusSelect.value=mission.status;
+            alert(`Не удалось изменить статус: ${error.message}`);
+          } finally { statusSelect.disabled=false; }
+        });
+        const statusCell=document.createElement('td'); statusCell.append(statusSelect);
+        row.append(td(mission.id),td(mission.name),statusCell,td(mission.vehicleId),td([mission.origin,mission.destination].filter(Boolean).join(' → ')||'—'),td(new Date(mission.updatedAt).toLocaleString()));
+        body.append(row);
+      }
+      el('missionCount').textContent=missions.filter(m=>['assigned','in_progress'].includes(m.status)).length;
+    }
+
+    function renderEvents(events) {
+      const body=el('events'); body.replaceChildren();
+      for (const event of events) {
+        const row=document.createElement('tr');
+        row.append(td(new Date(event.receivedAt).toLocaleString()),td(event.vehicleId),td(event.event||event.eventType),td(event.result),td(event.flightMode),td(event.latitude!=null?`${Number(event.latitude).toFixed(6)}, ${Number(event.longitude).toFixed(6)}`:'—'));
+        body.append(row);
+      }
+    }
+
+    async function refresh() {
+      try {
+        const [vehicleData,missionData,eventData]=await Promise.all([api('/api/v1/vehicles'),api('/api/v1/missions'),api('/api/v1/events?limit=50')]);
+        renderVehicles(vehicleData.vehicles); renderMissions(missionData.missions); renderEvents(eventData.events);
+        el('updatedAt').textContent=new Date().toLocaleTimeString();
+        el('connection').textContent='Сервер доступен'; el('connection').className='';
+      } catch (error) {
+        el('connection').textContent=`Нет связи: ${error.message}`; el('connection').className='error';
+      }
+    }
+
+    el('missionForm').addEventListener('submit', async event => {
+      event.preventDefault();
+      const form=new FormData(event.currentTarget);
+      const payload=Object.fromEntries(form.entries());
+      if (!payload.vehicleId) delete payload.vehicleId; else payload.vehicleId=Number(payload.vehicleId);
+      try { await api('/api/v1/missions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); event.currentTarget.reset(); refresh(); }
+      catch (error) { alert(`Не удалось создать задание: ${error.message}`); }
+    });
+
+    refresh(); setInterval(refresh,2000);
+  </script>
+</body>
+</html>
