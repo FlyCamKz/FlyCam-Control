@@ -1,0 +1,121 @@
+name: FlyCam Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'main'
+      - 'custom/**'
+    paths:
+      - 'custom/**'
+      - 'dispatcher/**'
+      - 'src/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/flycam-windows.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  AQT_SOURCE: 'git+https://github.com/miurahr/aqtinstall.git@8d961e61720b3c06583517fbc68d57ec0a4e9f95'
+
+jobs:
+  build:
+    name: Build Windows x64 installer
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    defaults:
+      run:
+        shell: cmd
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Visual Studio and NSIS dependencies
+        uses: ./.github/actions/install-dependencies
+        with:
+          gstreamer: 'false'
+          msvc: 'true'
+          nsis: 'true'
+
+      - name: Install Qt 6
+        uses: ./.github/actions/build-setup
+        with:
+          qt-host: windows
+          qt-arch: win64_msvc2022_64
+          aqt-source: ${{ env.AQT_SOURCE }}
+          build-type: Release
+          cache-variant: flycam
+
+      - name: Configure custom build
+        uses: ./.github/actions/cmake-configure
+        with:
+          build-dir: ${{ runner.temp }}/flycam-build
+          build-type: Release
+          extra-args: >-
+            -DQGC_BUILD_TESTING=OFF
+            -DQGC_ENABLE_GST_VIDEOSTREAMING=OFF
+
+      - name: Build
+        uses: ./.github/actions/cmake-build
+        with:
+          build-dir: ${{ runner.temp }}/flycam-build
+          build-type: Release
+
+      - name: Verify executable
+        uses: ./.github/actions/verify-executable
+        with:
+          binary-path: ${{ runner.temp }}/flycam-build/Release/FlyCam-Drone-Control-Center.exe
+          type: exe
+          build-dir: ${{ runner.temp }}/flycam-build
+
+      - name: Create installer
+        uses: ./.github/actions/cmake-install
+        with:
+          build-dir: ${{ runner.temp }}/flycam-build
+          build-type: Release
+
+      - name: Install and verify package
+        shell: pwsh
+        run: |
+          $buildDir = "${{ runner.temp }}\flycam-build"
+          $installer = Get-ChildItem -Path $buildDir -Filter "*installer*.exe" | Select-Object -First 1
+          if (-not $installer) {
+            throw "FlyCam installer was not generated"
+          }
+
+          $installDir = "${{ runner.temp }}\flycam-install-test"
+          Start-Process -FilePath $installer.FullName -ArgumentList "/S", "/D=$installDir" -Wait -NoNewWindow
+          $installedBinary = Join-Path $installDir "bin\FlyCam-Drone-Control-Center.exe"
+          if (-not (Test-Path $installedBinary)) {
+            throw "Installed FlyCam executable was not found"
+          }
+
+          $artifactDir = "${{ runner.temp }}\flycam-artifact"
+          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+          Copy-Item $installer.FullName (Join-Path $artifactDir "FlyCam-Drone-Control-Center-Installer-x64.exe")
+          Copy-Item $installedBinary (Join-Path $artifactDir "FlyCam-Drone-Control-Center.exe")
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v7
+        with:
+          name: FlyCam-Drone-Control-Center-Windows-x64
+          path: ${{ runner.temp }}/flycam-artifact/*
+          if-no-files-found: error
+          retention-days: 30
