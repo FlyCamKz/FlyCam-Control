@@ -33,3 +33,19 @@ set(CUSTOM_QT_COMPONENTS
     Qml
     CACHE INTERNAL "" FORCE
 )
+
+set(FLYCAM_DISPATCHER_SERVER_EXECUTABLE "" CACHE FILEPATH
+    "Prebuilt FlyCam dispatcher server executable to include in the installer"
+)
+if(WIN32 AND FLYCAM_DISPATCHER_SERVER_EXECUTABLE)
+    if(EXISTS "${FLYCAM_DISPATCHER_SERVER_EXECUTABLE}")
+        install(PROGRAMS "${FLYCAM_DISPATCHER_SERVER_EXECUTABLE}"
+            DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        )
+        message(STATUS "FlyCam: Bundling dispatcher server: ${FLYCAM_DISPATCHER_SERVER_EXECUTABLE}")
+    else()
+        message(FATAL_ERROR
+            "FlyCam dispatcher server executable not found: ${FLYCAM_DISPATCHER_SERVER_EXECUTABLE}"
+        )
+    endif()
+endif()

@@ -367,10 +367,19 @@ Item {
                     onTextChanged: dispatcherDialog.selectedApiKey = text
                 }
 
+                QGCLabel { text: qsTr("Веб-панель") }
+                QGCButton {
+                    Layout.fillWidth: true
+                    text: qsTr("Открыть в браузере")
+                    enabled: dispatcherDialog.selectedServerUrl.trim().length > 0
+                    onClicked: Qt.openUrlExternally(dispatcherDialog.selectedServerUrl.trim())
+                }
+
                 QGCLabel {
                     Layout.columnSpan: 2
                     Layout.preferredWidth: ScreenTools.defaultFontPixelWidth * 54
-                    text: qsTr("Сервер получает только телеметрию и события. ")
+                    text: qsTr("Локальный сервер 127.0.0.1:8088 запускается автоматически. ")
+                        + qsTr("Сервер получает только телеметрию и события. ")
                         + qsTr("Удалённые команды полёта и открытия отсека отключены.")
                     wrapMode: Text.WordWrap
                     color: qgcPal.warningText

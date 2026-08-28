@@ -63,6 +63,30 @@ jobs:
           build-type: Release
           cache-variant: flycam
 
+      - name: Test dispatcher server
+        shell: pwsh
+        run: python -m unittest -v dispatcher.test_server
+
+      - name: Package dispatcher server
+        shell: pwsh
+        run: |
+          $distDir = Join-Path $env:RUNNER_TEMP "flycam-dispatcher-dist"
+          $workDir = Join-Path $env:RUNNER_TEMP "flycam-dispatcher-build"
+          $specDir = Join-Path $env:RUNNER_TEMP "flycam-dispatcher-spec"
+          uv tool run --from pyinstaller==6.16.0 pyinstaller `
+            --clean `
+            --noconfirm `
+            --onefile `
+            --noconsole `
+            --name FlyCam-Dispatcher-Server `
+            --add-data "dispatcher/web;web" `
+            --distpath $distDir `
+            --workpath $workDir `
+            --specpath $specDir `
+            dispatcher/server.py
+          $dispatcherExe = (Resolve-Path (Join-Path $distDir "FlyCam-Dispatcher-Server.exe")).Path.Replace('\', '/')
+          "FLYCAM_DISPATCHER_EXE=$dispatcherExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Configure custom build
         uses: ./.github/actions/cmake-configure
         with:
@@ -71,6 +95,7 @@ jobs:
           extra-args: >-
             -DQGC_BUILD_TESTING=OFF
             -DQGC_ENABLE_GST_VIDEOSTREAMING=OFF
+            -DFLYCAM_DISPATCHER_SERVER_EXECUTABLE=${{ env.FLYCAM_DISPATCHER_EXE }}
 
       - name: Build
         uses: ./.github/actions/cmake-build
@@ -107,10 +132,62 @@ jobs:
             throw "Installed FlyCam executable was not found"
           }
 
+          $installedDispatcher = Join-Path $installDir "bin\FlyCam-Dispatcher-Server.exe"
+          if (-not (Test-Path $installedDispatcher)) {
+            throw "Installed FlyCam dispatcher server was not found"
+          }
+
+          $dispatcherTestDir = Join-Path "${{ runner.temp }}" "flycam-dispatcher-test"
+          New-Item -ItemType Directory -Force -Path $dispatcherTestDir | Out-Null
+          $dispatcherDatabase = Join-Path $dispatcherTestDir "dispatcher.sqlite3"
+          $dispatcherProcess = Start-Process -FilePath $installedDispatcher `
+            -ArgumentList "--host", "127.0.0.1", "--port", "18088", "--db", $dispatcherDatabase `
+            -WindowStyle Hidden -PassThru
+          try {
+            $health = $null
+            for ($attempt = 0; $attempt -lt 40; $attempt++) {
+              try {
+                $health = Invoke-RestMethod -Uri "http://127.0.0.1:18088/health" -TimeoutSec 1
+                break
+              } catch {
+                Start-Sleep -Milliseconds 250
+              }
+            }
+            if (-not $health -or $health.status -ne "ok") {
+              throw "FlyCam dispatcher health check failed"
+            }
+
+            $dashboard = Invoke-WebRequest -Uri "http://127.0.0.1:18088/" -TimeoutSec 2
+            if ($dashboard.StatusCode -ne 200 -or $dashboard.Content -notmatch "FlyCam") {
+              throw "FlyCam dispatcher dashboard verification failed"
+            }
+
+            $telemetry = @{
+              vehicleId = 1
+              flightMode = "Hold"
+              armed = $false
+              flying = $false
+              latitude = 43.2389
+              longitude = 76.8897
+            } | ConvertTo-Json -Compress
+            Invoke-RestMethod -Method Post `
+              -Uri "http://127.0.0.1:18088/api/v1/telemetry" `
+              -ContentType "application/json" -Body $telemetry | Out-Null
+            $vehicles = Invoke-RestMethod -Uri "http://127.0.0.1:18088/api/v1/vehicles"
+            if (@($vehicles.vehicles).Count -ne 1) {
+              throw "FlyCam dispatcher telemetry round-trip failed"
+            }
+          } finally {
+            if ($dispatcherProcess -and -not $dispatcherProcess.HasExited) {
+              Stop-Process -Id $dispatcherProcess.Id -Force
+            }
+          }
+
           $artifactDir = "${{ runner.temp }}\flycam-artifact"
           New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
           Copy-Item $installer.FullName (Join-Path $artifactDir "FlyCam-Drone-Control-Center-Installer-x64.exe")
           Copy-Item $installedBinary (Join-Path $artifactDir "FlyCam-Drone-Control-Center.exe")
+          Copy-Item $installedDispatcher (Join-Path $artifactDir "FlyCam-Dispatcher-Server.exe")
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v7

@@ -1,10 +1,14 @@
 #include "DispatcherClient.h"
 
 #include <QtCore/QApplicationStatic>
+#include <QtCore/QCoreApplication>
 #include <QtCore/QDateTime>
+#include <QtCore/QDir>
+#include <QtCore/QFileInfo>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 #include <QtCore/QSettings>
+#include <QtCore/QStandardPaths>
 #include <QtCore/QUrl>
 #include <QtNetwork/QNetworkReply>
 #include <QtNetwork/QNetworkRequest>
@@ -21,6 +25,12 @@ constexpr char SERVER_URL_KEY[] = "serverUrl";
 constexpr char API_KEY[] = "apiKey";
 constexpr int TELEMETRY_INTERVAL_MS = 1000;
 constexpr int REQUEST_TIMEOUT_MS = 4000;
+constexpr int LOCAL_SERVER_PORT = 8088;
+#ifdef Q_OS_WIN
+constexpr char BUNDLED_SERVER_EXECUTABLE[] = "FlyCam-Dispatcher-Server.exe";
+#else
+constexpr char BUNDLED_SERVER_EXECUTABLE[] = "FlyCam-Dispatcher-Server";
+#endif
 }
 
 Q_APPLICATION_STATIC(DispatcherClient, _dispatcherClientInstance);
@@ -29,6 +39,7 @@ DispatcherClient::DispatcherClient(QObject* parent)
     : QObject(parent)
 {
     _loadConfiguration();
+    _startBundledLocalServer();
 
     _timer.setInterval(TELEMETRY_INTERVAL_MS);
     _timer.setSingleShot(false);
@@ -45,6 +56,11 @@ DispatcherClient::DispatcherClient(QObject* parent)
     if (_enabled) {
         _timer.start();
     }
+}
+
+DispatcherClient::~DispatcherClient()
+{
+    _stopBundledLocalServer();
 }
 
 DispatcherClient* DispatcherClient::instance()
@@ -101,7 +117,13 @@ void DispatcherClient::setServerUrl(const QString& serverUrl)
     if (_serverUrl == normalizedUrl) {
         return;
     }
+    const bool wasUsingBundledLocalServer = _usesBundledLocalServer();
     _serverUrl = normalizedUrl;
+    if (wasUsingBundledLocalServer && !_usesBundledLocalServer()) {
+        _stopBundledLocalServer();
+    } else if (!wasUsingBundledLocalServer && _usesBundledLocalServer()) {
+        _startBundledLocalServer();
+    }
     _saveConfiguration();
     _setConnectionState(false);
     emit configurationChanged();
@@ -121,6 +143,65 @@ void DispatcherClient::setApiKey(const QString& apiKey)
 void DispatcherClient::sendNow()
 {
     _sendTelemetry();
+}
+
+bool DispatcherClient::_usesBundledLocalServer() const
+{
+    const QUrl serverUrl(_serverUrl);
+    const QString host = serverUrl.host();
+    const bool loopbackHost = (host.compare(QStringLiteral("127.0.0.1"), Qt::CaseInsensitive) == 0)
+        || (host.compare(QStringLiteral("localhost"), Qt::CaseInsensitive) == 0)
+        || (host == QStringLiteral("::1"));
+    return serverUrl.isValid() && (serverUrl.scheme() == QStringLiteral("http")) && loopbackHost
+        && (serverUrl.port(80) == LOCAL_SERVER_PORT);
+}
+
+void DispatcherClient::_startBundledLocalServer()
+{
+    if (!_usesBundledLocalServer() || (_localServerProcess.state() != QProcess::NotRunning)) {
+        return;
+    }
+
+    const QString executablePath = QDir(QCoreApplication::applicationDirPath())
+                                       .filePath(QString::fromLatin1(BUNDLED_SERVER_EXECUTABLE));
+    const QFileInfo executableInfo(executablePath);
+    if (!executableInfo.isFile()) {
+        return;
+    }
+
+    const QString applicationDataPath = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (applicationDataPath.isEmpty()) {
+        return;
+    }
+    const QString dispatcherDataPath = QDir(applicationDataPath).filePath(QStringLiteral("dispatcher"));
+    if (!QDir().mkpath(dispatcherDataPath)) {
+        return;
+    }
+
+    _localServerProcess.setProgram(executableInfo.absoluteFilePath());
+    _localServerProcess.setWorkingDirectory(executableInfo.absolutePath());
+    _localServerProcess.setArguments({
+        QStringLiteral("--host"),
+        QStringLiteral("127.0.0.1"),
+        QStringLiteral("--port"),
+        QString::number(LOCAL_SERVER_PORT),
+        QStringLiteral("--db"),
+        QDir(dispatcherDataPath).filePath(QStringLiteral("flycam-dispatcher.sqlite3")),
+    });
+    _localServerProcess.start();
+}
+
+void DispatcherClient::_stopBundledLocalServer()
+{
+    if (_localServerProcess.state() == QProcess::NotRunning) {
+        return;
+    }
+
+    _localServerProcess.terminate();
+    if (!_localServerProcess.waitForFinished(500)) {
+        _localServerProcess.kill();
+        (void) _localServerProcess.waitForFinished(500);
+    }
 }
 
 void DispatcherClient::_setVehicle(Vehicle* vehicle)

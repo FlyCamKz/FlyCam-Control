@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest.mock import patch
 
 try:
-    from .server import create_server
+    from .server import create_server, default_database_path
 except ImportError:
-    from server import create_server
+    from server import create_server, default_database_path
 
 
 class DispatcherServerTest(unittest.TestCase):
@@ -51,6 +53,18 @@ class DispatcherServerTest(unittest.TestCase):
         status, payload = self.request("GET", "/health", authorized=False)
         self.assertEqual(status, 200)
         self.assertEqual(payload["status"], "ok")
+
+    def test_dashboard_is_served(self) -> None:
+        with urllib.request.urlopen(self.base_url + "/", timeout=2) as response:
+            content = response.read().decode("utf-8")
+        self.assertEqual(response.status, 200)
+        self.assertIn("FlyCam", content)
+        self.assertIn("диспетчерский центр", content)
+
+    def test_database_path_can_be_configured_from_environment(self) -> None:
+        configured_path = Path(self.temp_directory.name) / "configured.sqlite3"
+        with patch.dict(os.environ, {"FLYCAM_DB": str(configured_path)}):
+            self.assertEqual(default_database_path(), configured_path)
 
     def test_api_requires_key(self) -> None:
         status, payload = self.request("GET", "/api/v1/vehicles", authorized=False)

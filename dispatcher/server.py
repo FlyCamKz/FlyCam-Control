@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +24,34 @@ MISSION_STATUSES = {"planned", "assigned", "in_progress", "completed", "cancelle
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def default_database_path() -> Path:
+    configured_path = os.getenv("FLYCAM_DB")
+    if configured_path:
+        return Path(configured_path)
+
+    if os.name == "nt" and os.getenv("LOCALAPPDATA"):
+        return Path(os.environ["LOCALAPPDATA"]) / "FlyCam" / "Dispatcher" / "flycam-dispatcher.sqlite3"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "FlyCam" / "Dispatcher" / "flycam-dispatcher.sqlite3"
+
+    state_root = Path(os.getenv("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    return state_root / "flycam-dispatcher" / "flycam-dispatcher.sqlite3"
+
+
+def configure_logging(database_path: Path) -> None:
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    handlers: list[logging.Handler] = [
+        logging.FileHandler(database_path.parent / "flycam-dispatcher.log", encoding="utf-8")
+    ]
+    if sys.stderr is not None:
+        handlers.append(logging.StreamHandler())
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=handlers,
+    )
 
 
 class Database:
@@ -502,7 +531,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--db",
         type=Path,
-        default=Path(os.getenv("FLYCAM_DB", "./data/flycam-dispatcher.sqlite3")),
+        default=default_database_path(),
     )
     parser.add_argument("--api-key", default=os.getenv("FLYCAM_API_KEY", ""))
     parser.add_argument(
@@ -515,7 +544,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    configure_logging(args.db)
     server = create_server(args.host, args.port, args.db, args.api_key, args.retention_days)
     LOGGER.info("FlyCam dispatcher listening on http://%s:%s", args.host, server.server_port)
     try:

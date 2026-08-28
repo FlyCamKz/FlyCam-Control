@@ -3,6 +3,7 @@
 #include <QtCore/QJsonObject>
 #include <QtCore/QObject>
 #include <QtCore/QPointer>
+#include <QtCore/QProcess>
 #include <QtCore/QTimer>
 #include <QtNetwork/QNetworkAccessManager>
 #include <QtQmlIntegration/QtQmlIntegration>
@@ -25,6 +26,7 @@ class DispatcherClient : public QObject
 
 public:
     explicit DispatcherClient(QObject* parent = nullptr);
+    ~DispatcherClient() override;
 
     static DispatcherClient* instance();
 
@@ -46,6 +48,9 @@ signals:
     void connectionStateChanged();
 
 private:
+    bool _usesBundledLocalServer() const;
+    void _startBundledLocalServer();
+    void _stopBundledLocalServer();
     void _setVehicle(Vehicle* vehicle);
     void _sendTelemetry();
     void _sendEvent(const QJsonObject& event);
@@ -56,6 +61,7 @@ private:
 
     Vehicle* _vehicle = nullptr;
     QTimer _timer;
+    QProcess _localServerProcess;
     QNetworkAccessManager _networkManager;
     QPointer<QNetworkReply> _reply;
     bool _enabled = false;
