@@ -10,6 +10,8 @@ import logging
 import os
 import sqlite3
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -70,8 +72,17 @@ class Database:
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
     def _initialize(self) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS telemetry_latest (
@@ -117,7 +128,7 @@ class Database:
         vehicle_id = int(payload["vehicleId"])
         received_at = utc_now()
         payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 INSERT INTO telemetry_latest(vehicle_id, received_at, payload)
@@ -138,7 +149,7 @@ class Database:
                 self._apply_retention(connection)
 
     def list_vehicles(self) -> list[dict[str, Any]]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 "SELECT vehicle_id, received_at, payload FROM telemetry_latest ORDER BY vehicle_id"
             ).fetchall()
@@ -148,7 +159,7 @@ class Database:
         ]
 
     def telemetry_history(self, vehicle_id: int, limit: int) -> list[dict[str, Any]]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 """
                 SELECT received_at, payload
@@ -167,7 +178,7 @@ class Database:
     def create_mission(self, payload: dict[str, Any]) -> dict[str, Any]:
         now = utc_now()
         status = str(payload.get("status", "planned"))
-        with self._connect() as connection:
+        with self._connection() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO missions(
@@ -191,14 +202,14 @@ class Database:
         return self.get_mission(mission_id)
 
     def get_mission(self, mission_id: int) -> dict[str, Any]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute("SELECT * FROM missions WHERE id = ?", (mission_id,)).fetchone()
         if row is None:
             raise KeyError(mission_id)
         return _mission_row(row)
 
     def list_missions(self) -> list[dict[str, Any]]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute("SELECT * FROM missions ORDER BY id DESC").fetchall()
         return [_mission_row(row) for row in rows]
 
@@ -224,7 +235,7 @@ class Database:
         updates.append("updated_at = ?")
         values.append(utc_now())
         values.append(mission_id)
-        with self._connect() as connection:
+        with self._connection() as connection:
             cursor = connection.execute(
                 f"UPDATE missions SET {', '.join(updates)} WHERE id = ?", values
             )
@@ -236,7 +247,7 @@ class Database:
         received_at = utc_now()
         event_type = str(payload.get("eventType", "operator-event"))
         payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        with self._connect() as connection:
+        with self._connection() as connection:
             cursor = connection.execute(
                 "INSERT INTO events(received_at, vehicle_id, event_type, payload) VALUES (?, ?, ?, ?)",
                 (received_at, payload.get("vehicleId"), event_type, payload_json),
@@ -248,7 +259,7 @@ class Database:
         return {"id": event_id, "receivedAt": received_at, **payload}
 
     def list_events(self, limit: int) -> list[dict[str, Any]]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 "SELECT id, received_at, payload FROM events ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
