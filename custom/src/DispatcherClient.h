@@ -4,9 +4,9 @@
 #include <QtCore/QObject>
 #include <QtCore/QPointer>
 #include <QtCore/QProcess>
+#include <QtCore/QQueue>
 #include <QtCore/QTimer>
 #include <QtNetwork/QNetworkAccessManager>
-#include <QtQmlIntegration/QtQmlIntegration>
 
 class QNetworkReply;
 class Vehicle;
@@ -14,8 +14,6 @@ class Vehicle;
 class DispatcherClient : public QObject
 {
     Q_OBJECT
-    QML_NAMED_ELEMENT(Dispatcher)
-    QML_SINGLETON
 
     Q_PROPERTY(bool enabled READ enabled WRITE setEnabled NOTIFY configurationChanged)
     Q_PROPERTY(QString serverUrl READ serverUrl WRITE setServerUrl NOTIFY configurationChanged)
@@ -23,6 +21,7 @@ class DispatcherClient : public QObject
     Q_PROPERTY(bool serverReachable READ serverReachable NOTIFY connectionStateChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY connectionStateChanged)
     Q_PROPERTY(QString lastTelemetryUtc READ lastTelemetryUtc NOTIFY connectionStateChanged)
+    Q_PROPERTY(int connectedVehicleCount READ connectedVehicleCount NOTIFY vehicleCountChanged)
 
 public:
     explicit DispatcherClient(QObject* parent = nullptr);
@@ -36,6 +35,7 @@ public:
     bool serverReachable() const { return _serverReachable; }
     QString statusText() const;
     QString lastTelemetryUtc() const { return _lastTelemetryUtc; }
+    int connectedVehicleCount() const;
 
     void setEnabled(bool enabled);
     void setServerUrl(const QString& serverUrl);
@@ -46,24 +46,26 @@ public:
 signals:
     void configurationChanged();
     void connectionStateChanged();
+    void vehicleCountChanged();
 
 private:
     bool _usesBundledLocalServer() const;
     void _startBundledLocalServer();
     void _stopBundledLocalServer();
-    void _setVehicle(Vehicle* vehicle);
     void _sendTelemetry();
+    void _sendNextTelemetry();
+    QJsonObject _telemetryForVehicle(Vehicle* vehicle) const;
     void _sendEvent(const QJsonObject& event);
     void _handleReply();
     void _setConnectionState(bool reachable, const QString& errorText = QString());
     void _loadConfiguration();
     void _saveConfiguration() const;
 
-    Vehicle* _vehicle = nullptr;
     QTimer _timer;
     QProcess _localServerProcess;
     QNetworkAccessManager _networkManager;
     QPointer<QNetworkReply> _reply;
+    QQueue<QJsonObject> _telemetryQueue;
     bool _enabled = false;
     bool _serverReachable = false;
     QString _serverUrl = QStringLiteral("http://127.0.0.1:8088");

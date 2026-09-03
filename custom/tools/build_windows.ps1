@@ -27,7 +27,7 @@ if (-not (Test-Path $qtToolchain)) {
     throw "Qt toolchain file was not found at $qtToolchain"
 }
 
-Write-Host "Configuring FlyCam Drone Control Center"
+Write-Host "Configuring FlyCam AeroScope/AgroScope Drone Control Center"
 cmake `
     -S $repositoryRoot `
     -B $BuildDirectory `
@@ -42,7 +42,7 @@ cmake --build $BuildDirectory --config $Configuration --parallel
 Write-Host "Creating Windows installer"
 cmake --install $BuildDirectory --config $Configuration
 
-$binary = Join-Path $BuildDirectory "$Configuration\FlyCam-Drone-Control-Center.exe"
+$binary = Join-Path $BuildDirectory "$Configuration\FlyCam-AeroScope-AgroScope-Control-Center.exe"
 if (-not (Test-Path $binary)) {
     throw "Build completed but $binary was not found."
 }

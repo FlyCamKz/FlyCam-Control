@@ -16,6 +16,8 @@ Item {
 
     property var totalToolInsets: totalInsets
     property real toolsMargin: ScreenTools.defaultFontPixelWidth * 0.75
+    property var activeVehicle: QGroundControl.multiVehicleManager.activeVehicle
+    property int connectedVehicleCount: QGroundControl.multiVehicleManager.vehicles.count
 
     QGCToolInsets {
         id: totalInsets
@@ -89,6 +91,18 @@ Item {
                     text: cargoPanel.expanded ? "−" : "+"
                     onClicked: cargoPanel.expanded = !cargoPanel.expanded
                 }
+            }
+
+            QGCLabel {
+                Layout.fillWidth: true
+                visible: cargoPanel.expanded
+                text: root.activeVehicle
+                    ? qsTr("Активный БПЛА: %1 · подключено: %2")
+                        .arg(root.activeVehicle.id)
+                        .arg(root.connectedVehicleCount)
+                    : qsTr("Подключённых БПЛА: 0")
+                color: root.connectedVehicleCount > 1 ? qgcPal.colorGreen : qgcPal.text
+                font.bold: root.connectedVehicleCount > 1
             }
 
             QGCLabel {
@@ -189,17 +203,30 @@ Item {
         anchors.leftMargin: root.toolsMargin
         anchors.bottomMargin: root.toolsMargin
         width: ScreenTools.defaultFontPixelWidth * 31
-        height: ScreenTools.defaultFontPixelHeight * 4
+        height: ScreenTools.defaultFontPixelHeight * 5.5
         color: qgcPal.window
         opacity: 0.94
         radius: ScreenTools.defaultBorderRadius
 
-        Image {
+        ColumnLayout {
             anchors.fill: parent
-            anchors.margins: ScreenTools.defaultFontPixelWidth * 0.75
-            source: "qrc:/flycam/branding/brand_lockup.png"
-            fillMode: Image.PreserveAspectFit
-            mipmap: true
+            anchors.margins: ScreenTools.defaultFontPixelWidth * 0.6
+            spacing: 0
+
+            Image {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                source: "qrc:/flycam/branding/brand_lockup.png"
+                fillMode: Image.PreserveAspectFit
+                mipmap: true
+            }
+
+            QGCLabel {
+                Layout.alignment: Qt.AlignHCenter
+                text: qsTr("AeroScope / AgroScope")
+                font.bold: true
+                font.pointSize: ScreenTools.smallFontPointSize
+            }
         }
     }
 

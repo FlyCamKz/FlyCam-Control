@@ -15,6 +15,7 @@
 #include <QtPositioning/QGeoCoordinate>
 
 #include "CargoBayController.h"
+#include "QmlObjectListModel.h"
 #include "Vehicle/MultiVehicleManager.h"
 #include "Vehicle/Vehicle.h"
 
@@ -50,8 +51,17 @@ DispatcherClient::DispatcherClient(QObject* parent)
                    &DispatcherClient::_sendEvent);
 
     MultiVehicleManager* manager = MultiVehicleManager::instance();
-    (void) connect(manager, &MultiVehicleManager::activeVehicleChanged, this, &DispatcherClient::_setVehicle);
-    _setVehicle(manager->activeVehicle());
+    (void) connect(manager, &MultiVehicleManager::vehicleAdded, this, [this](Vehicle*) {
+        emit vehicleCountChanged();
+        emit connectionStateChanged();
+        if (_enabled) {
+            _sendTelemetry();
+        }
+    });
+    (void) connect(manager, &MultiVehicleManager::vehicleRemoved, this, [this](Vehicle*) {
+        emit vehicleCountChanged();
+        emit connectionStateChanged();
+    });
 
     if (_enabled) {
         _timer.start();
@@ -73,16 +83,21 @@ QString DispatcherClient::statusText() const
     if (!_enabled) {
         return tr("Диспетчеризация выключена");
     }
-    if (!_vehicle) {
+    if (connectedVehicleCount() == 0) {
         return tr("Диспетчер: ожидание БПЛА");
     }
     if (!_lastError.isEmpty()) {
         return tr("Диспетчер: %1").arg(_lastError);
     }
     if (_serverReachable) {
-        return tr("Диспетчер: телеметрия передаётся");
+        return tr("Диспетчер: телеметрия %1 БПЛА").arg(connectedVehicleCount());
     }
     return tr("Диспетчер: проверка соединения");
+}
+
+int DispatcherClient::connectedVehicleCount() const
+{
+    return MultiVehicleManager::instance()->vehicles()->count();
 }
 
 void DispatcherClient::setEnabled(bool enabled)
@@ -98,6 +113,7 @@ void DispatcherClient::setEnabled(bool enabled)
         _sendTelemetry();
     } else {
         _timer.stop();
+        _telemetryQueue.clear();
         if (_reply) {
             _reply->abort();
         }
@@ -204,27 +220,61 @@ void DispatcherClient::_stopBundledLocalServer()
     }
 }
 
-void DispatcherClient::_setVehicle(Vehicle* vehicle)
+void DispatcherClient::_sendTelemetry()
 {
-    if (_vehicle == vehicle) {
+    if (!_enabled || _reply) {
         return;
     }
 
-    if (_vehicle) {
-        disconnect(_vehicle, nullptr, this, nullptr);
+    _telemetryQueue.clear();
+    QmlObjectListModel* vehicles = MultiVehicleManager::instance()->vehicles();
+    for (int index = 0; index < vehicles->count(); ++index) {
+        auto* vehicle = qobject_cast<Vehicle*>(vehicles->get(index));
+        if (vehicle) {
+            _telemetryQueue.enqueue(_telemetryForVehicle(vehicle));
+        }
     }
-    _vehicle = vehicle;
 
-    if (_vehicle) {
-        (void) connect(_vehicle, &QObject::destroyed, this, [this]() { _setVehicle(nullptr); });
-    }
-
-    emit connectionStateChanged();
+    _sendNextTelemetry();
 }
 
-void DispatcherClient::_sendTelemetry()
+QJsonObject DispatcherClient::_telemetryForVehicle(Vehicle* vehicle) const
 {
-    if (!_enabled || !_vehicle || _reply) {
+    if (!vehicle) {
+        return {};
+    }
+
+    const QGeoCoordinate coordinate = vehicle->coordinate();
+    QJsonObject telemetry {
+        {QStringLiteral("timestampUtc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)},
+        {QStringLiteral("vehicleId"), vehicle->id()},
+        {QStringLiteral("flightMode"), vehicle->flightMode()},
+        {QStringLiteral("armed"), vehicle->armed()},
+        {QStringLiteral("flying"), vehicle->flying()},
+        {QStringLiteral("mavlinkLossPercent"), vehicle->mavlinkLossPercent()},
+    };
+
+    if (vehicle == MultiVehicleManager::instance()->activeVehicle()) {
+        telemetry.insert(QStringLiteral("activeVehicle"), true);
+        telemetry.insert(QStringLiteral("cargoCommandedOpen"), CargoBayController::instance()->commandedOpen());
+        telemetry.insert(QStringLiteral("cargoCommandedStateKnown"),
+                         CargoBayController::instance()->commandedStateKnown());
+        telemetry.insert(QStringLiteral("cargoFeedbackAvailable"), CargoBayController::instance()->feedbackAvailable());
+        telemetry.insert(QStringLiteral("cargoStatus"), CargoBayController::instance()->statusText());
+    }
+
+    if (coordinate.isValid()) {
+        telemetry.insert(QStringLiteral("latitude"), coordinate.latitude());
+        telemetry.insert(QStringLiteral("longitude"), coordinate.longitude());
+        telemetry.insert(QStringLiteral("altitude"), coordinate.altitude());
+    }
+
+    return telemetry;
+}
+
+void DispatcherClient::_sendNextTelemetry()
+{
+    if (!_enabled || _reply || _telemetryQueue.isEmpty()) {
         return;
     }
 
@@ -232,31 +282,16 @@ void DispatcherClient::_sendTelemetry()
     if (!endpoint.isValid() || (endpoint.scheme() != QStringLiteral("http")
                                 && endpoint.scheme() != QStringLiteral("https"))) {
         _setConnectionState(false, tr("некорректный адрес сервера"));
+        _telemetryQueue.clear();
         return;
     }
 
-    const QGeoCoordinate coordinate = _vehicle->coordinate();
-    QJsonObject telemetry {
-        {QStringLiteral("timestampUtc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)},
-        {QStringLiteral("vehicleId"), _vehicle->id()},
-        {QStringLiteral("flightMode"), _vehicle->flightMode()},
-        {QStringLiteral("armed"), _vehicle->armed()},
-        {QStringLiteral("flying"), _vehicle->flying()},
-        {QStringLiteral("mavlinkLossPercent"), _vehicle->mavlinkLossPercent()},
-        {QStringLiteral("cargoCommandedOpen"), CargoBayController::instance()->commandedOpen()},
-        {QStringLiteral("cargoCommandedStateKnown"), CargoBayController::instance()->commandedStateKnown()},
-        {QStringLiteral("cargoFeedbackAvailable"), CargoBayController::instance()->feedbackAvailable()},
-        {QStringLiteral("cargoStatus"), CargoBayController::instance()->statusText()},
-    };
-    if (coordinate.isValid()) {
-        telemetry.insert(QStringLiteral("latitude"), coordinate.latitude());
-        telemetry.insert(QStringLiteral("longitude"), coordinate.longitude());
-        telemetry.insert(QStringLiteral("altitude"), coordinate.altitude());
-    }
+    const QJsonObject telemetry = _telemetryQueue.dequeue();
 
     QNetworkRequest request(endpoint);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("FlyCam-Drone-Control-Center/1.0"));
+    request.setHeader(QNetworkRequest::UserAgentHeader,
+                      QStringLiteral("FlyCam-AeroScope-AgroScope-Control-Center/1.0"));
     request.setTransferTimeout(REQUEST_TIMEOUT_MS);
     if (!_apiKey.isEmpty()) {
         request.setRawHeader("X-API-Key", _apiKey.toUtf8());
@@ -280,10 +315,15 @@ void DispatcherClient::_handleReply()
     _reply->deleteLater();
     _reply = nullptr;
 
-    if (success) {
-        _lastTelemetryUtc = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+    if (!success) {
+        _telemetryQueue.clear();
+        _setConnectionState(false, errorText);
+        return;
     }
-    _setConnectionState(success, errorText);
+
+    _lastTelemetryUtc = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+    _setConnectionState(true);
+    _sendNextTelemetry();
 }
 
 void DispatcherClient::_sendEvent(const QJsonObject& event)
@@ -300,7 +340,8 @@ void DispatcherClient::_sendEvent(const QJsonObject& event)
 
     QNetworkRequest request(endpoint);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("FlyCam-Drone-Control-Center/1.0"));
+    request.setHeader(QNetworkRequest::UserAgentHeader,
+                      QStringLiteral("FlyCam-AeroScope-AgroScope-Control-Center/1.0"));
     request.setTransferTimeout(REQUEST_TIMEOUT_MS);
     if (!_apiKey.isEmpty()) {
         request.setRawHeader("X-API-Key", _apiKey.toUtf8());

@@ -90,6 +90,20 @@ class DispatcherServerTest(unittest.TestCase):
         self.assertEqual(len(payload["vehicles"]), 1)
         self.assertEqual(payload["vehicles"][0]["vehicleId"], 1)
 
+    def test_multiple_vehicles_are_stored_independently(self) -> None:
+        for vehicle_id, flight_mode in ((1, "Hold"), (2, "Mission"), (7, "Return")):
+            status, payload = self.request(
+                "POST",
+                "/api/v1/telemetry",
+                {"vehicleId": vehicle_id, "flightMode": flight_mode, "armed": False},
+            )
+            self.assertEqual(status, 202)
+            self.assertTrue(payload["accepted"])
+
+        status, payload = self.request("GET", "/api/v1/vehicles")
+        self.assertEqual(status, 200)
+        self.assertEqual([vehicle["vehicleId"] for vehicle in payload["vehicles"]], [1, 2, 7])
+
     def test_mission_create_and_update(self) -> None:
         status, mission = self.request(
             "POST",

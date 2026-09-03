@@ -1,13 +1,13 @@
-# FlyCam Drone Control Center
+# FlyCam AeroScope/AgroScope Drone Control Center
 
 Custom QGroundControl build for Satbayev University and FlyCam, based on
 QGroundControl v5.1.3.
 
-Product name: **FlyCam Drone Control Center**
+Product name: **FlyCam AeroScope/AgroScope Drone Control Center**
 
 Brand line: **Satbayev University / FlyCam**
 
-Windows display title: **Satbayev University / FlyCam — Drone Control Center**
+Windows display title: **Satbayev University / FlyCam — AeroScope/AgroScope Drone Control Center**
 
 ## First-release profile
 
@@ -15,10 +15,11 @@ Windows display title: **Satbayev University / FlyCam — Drone Control Center**
 - PX4 / Cube Orange
 - USB/COM and RFD900/SiK telemetry
 - Standard QGroundControl map, mission planning and telemetry
+- Multi-vehicle map, active-vehicle selector and confirmed group actions
 - Satbayev University / FlyCam co-branding
 - Protected Futaba S3001 cargo-bay control through PX4 generic actuators
 - Local JSONL cargo command audit log
-- Optional telemetry and event uplink to the FlyCam dispatcher
+- Optional telemetry and event uplink for every connected vehicle to the FlyCam dispatcher
 - Video backend disabled until a camera is selected
 - ArduPilot UI disabled
 

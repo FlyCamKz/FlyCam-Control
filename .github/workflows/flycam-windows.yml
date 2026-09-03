@@ -110,7 +110,7 @@ jobs:
       - name: Verify executable
         uses: ./.github/actions/verify-executable
         with:
-          binary-path: ${{ runner.temp }}/flycam-build/Release/FlyCam-Drone-Control-Center.exe
+          binary-path: ${{ runner.temp }}/flycam-build/Release/FlyCam-AeroScope-AgroScope-Control-Center.exe
           type: exe
           build-dir: ${{ runner.temp }}/flycam-build
 
@@ -131,7 +131,7 @@ jobs:
 
           $installDir = "${{ runner.temp }}\flycam-install-test"
           Start-Process -FilePath $installer.FullName -ArgumentList "/S", "/D=$installDir" -Wait -NoNewWindow
-          $installedBinary = Join-Path $installDir "bin\FlyCam-Drone-Control-Center.exe"
+          $installedBinary = Join-Path $installDir "bin\FlyCam-AeroScope-AgroScope-Control-Center.exe"
           if (-not (Test-Path $installedBinary)) {
             throw "Installed FlyCam executable was not found"
           }
@@ -166,7 +166,7 @@ jobs:
               throw "FlyCam dispatcher dashboard verification failed"
             }
 
-            $telemetry = @{
+            $telemetryOne = @{
               vehicleId = 1
               flightMode = "Hold"
               armed = $false
@@ -176,10 +176,21 @@ jobs:
             } | ConvertTo-Json -Compress
             Invoke-RestMethod -Method Post `
               -Uri "http://127.0.0.1:18088/api/v1/telemetry" `
-              -ContentType "application/json" -Body $telemetry | Out-Null
+              -ContentType "application/json" -Body $telemetryOne | Out-Null
+            $telemetryTwo = @{
+              vehicleId = 2
+              flightMode = "Mission"
+              armed = $true
+              flying = $true
+              latitude = 43.2390
+              longitude = 76.8898
+            } | ConvertTo-Json -Compress
+            Invoke-RestMethod -Method Post `
+              -Uri "http://127.0.0.1:18088/api/v1/telemetry" `
+              -ContentType "application/json" -Body $telemetryTwo | Out-Null
             $vehicles = Invoke-RestMethod -Uri "http://127.0.0.1:18088/api/v1/vehicles"
-            if (@($vehicles.vehicles).Count -ne 1) {
-              throw "FlyCam dispatcher telemetry round-trip failed"
+            if (@($vehicles.vehicles).Count -ne 2) {
+              throw "FlyCam dispatcher multi-vehicle telemetry round-trip failed"
             }
           } finally {
             if ($dispatcherProcess -and -not $dispatcherProcess.HasExited) {
@@ -189,14 +200,14 @@ jobs:
 
           $artifactDir = "${{ runner.temp }}\flycam-artifact"
           New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
-          Copy-Item $installer.FullName (Join-Path $artifactDir "FlyCam-Drone-Control-Center-Installer-x64.exe")
-          Copy-Item $installedBinary (Join-Path $artifactDir "FlyCam-Drone-Control-Center.exe")
+          Copy-Item $installer.FullName (Join-Path $artifactDir "FlyCam-AeroScope-AgroScope-Control-Center-Installer-x64.exe")
+          Copy-Item $installedBinary (Join-Path $artifactDir "FlyCam-AeroScope-AgroScope-Control-Center.exe")
           Copy-Item $installedDispatcher (Join-Path $artifactDir "FlyCam-Dispatcher-Server.exe")
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v7
         with:
-          name: FlyCam-Drone-Control-Center-Windows-x64
+          name: FlyCam-AeroScope-AgroScope-Control-Center-Windows-x64
           path: ${{ runner.temp }}/flycam-artifact/*
           if-no-files-found: error
           retention-days: 30

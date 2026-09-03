@@ -1,4 +1,4 @@
-# Готовность FlyCam Drone Control Center
+# Готовность FlyCam AeroScope/AgroScope Drone Control Center
 
 ## Реализовано в исходниках
 

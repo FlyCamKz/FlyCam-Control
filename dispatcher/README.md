@@ -1,6 +1,6 @@
 # FlyCam Dispatcher
 
-Local or server-side dispatcher for FlyCam Drone Control Center. It stores live
+Local or server-side dispatcher for FlyCam AeroScope/AgroScope Drone Control Center. It stores live
 vehicle telemetry, a retained telemetry history, delivery missions and operator
 events in SQLite. The browser dashboard is available at `http://127.0.0.1:8088/`.
 

@@ -5,7 +5,6 @@
 #include <QtCore/QJsonObject>
 #include <QtCore/QObject>
 #include <QtCore/QString>
-#include <QtQmlIntegration/QtQmlIntegration>
 
 #include "Vehicle/VehicleTypes.h"
 
@@ -14,8 +13,6 @@ class Vehicle;
 class CargoBayController : public QObject
 {
     Q_OBJECT
-    QML_NAMED_ELEMENT(CargoBay)
-    QML_SINGLETON
 
     Q_PROPERTY(bool vehicleAvailable READ vehicleAvailable NOTIFY availabilityChanged)
     Q_PROPERTY(bool px4Vehicle READ px4Vehicle NOTIFY availabilityChanged)
