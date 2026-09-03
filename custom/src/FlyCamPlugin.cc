@@ -15,7 +15,7 @@ FlyCamPlugin::FlyCamPlugin(QObject *parent)
     : QGCCorePlugin(parent)
 {
     QGuiApplication::setApplicationDisplayName(
-        QStringLiteral("Satbayev University / FlyCam — AeroScope/AgroScope Drone Control Center"));
+        QStringLiteral("FlyCam — AeroScope/AgroScope Drone Control Center"));
     qmlRegisterSingletonInstance("FlyCam.Core", 1, 0, "CargoBay", CargoBayController::instance());
     qmlRegisterSingletonInstance("FlyCam.Core", 1, 0, "Dispatcher", DispatcherClient::instance());
 }

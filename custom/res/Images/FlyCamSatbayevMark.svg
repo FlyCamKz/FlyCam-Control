@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <rect width="256" height="256" rx="42" fill="#ffffff"/>
-  <image x="50" y="18" width="156" height="108" preserveAspectRatio="xMidYMid meet" href="qrc:/flycam/branding/satbayev_logo.png"/>
-  <path d="M32 136h192" stroke="#0b68ad" stroke-width="5" stroke-linecap="round"/>
-  <image x="19" y="150" width="218" height="82" preserveAspectRatio="xMidYMid meet" href="qrc:/flycam/branding/flycam_logo.png"/>
-</svg>

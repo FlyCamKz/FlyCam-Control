@@ -1,13 +1,11 @@
 <RCC>
     <qresource prefix="/Custom/res">
-        <file alias="QGCLogoFull.svg">res/Images/FlyCamSatbayevMark.svg</file>
+        <file alias="QGCLogoFull.svg">res/Images/FlyCamMark.svg</file>
     </qresource>
     <qresource prefix="/Custom/qml">
         <file alias="QGroundControl/FlyView/FlyViewCustomLayer.qml">src/FlyViewCustomLayer.qml</file>
     </qresource>
     <qresource prefix="/flycam/branding">
         <file alias="flycam_logo.png">res/Images/flycam_logo.png</file>
-        <file alias="satbayev_logo.png">res/Images/satbayev_logo.png</file>
-        <file alias="brand_lockup.png">res/Images/brand_lockup.png</file>
     </qresource>
 </RCC>

@@ -108,7 +108,7 @@ class DispatcherServerTest(unittest.TestCase):
         status, mission = self.request(
             "POST",
             "/api/v1/missions",
-            {"name": "Доставка №1", "origin": "Satbayev University", "destination": "Clinic"},
+            {"name": "Доставка №1", "origin": "База FlyCam", "destination": "Clinic"},
         )
         self.assertEqual(status, 201)
         self.assertEqual(mission["status"], "planned")

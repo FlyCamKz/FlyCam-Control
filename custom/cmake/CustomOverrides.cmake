@@ -1,10 +1,10 @@
 # Product identity
 set(QGC_APP_NAME "FlyCam-AeroScope-AgroScope-Control-Center" CACHE STRING "Application name" FORCE)
-set(QGC_APP_DESCRIPTION "Satbayev University / FlyCam AeroScope/AgroScope multi-vehicle ground control station for PX4 UAVs" CACHE STRING "Application description" FORCE)
-set(QGC_APP_COPYRIGHT "Copyright (c) 2026 Satbayev University and FlyCam" CACHE STRING "Copyright notice" FORCE)
-set(QGC_ORG_NAME "Satbayev University and FlyCam" CACHE STRING "Organization name" FORCE)
-set(QGC_ORG_DOMAIN "satbayev.university" CACHE STRING "Organization domain" FORCE)
-set(QGC_PACKAGE_NAME "kz.satbayev.flycam.aeroscope.agroscope.controlcenter" CACHE STRING "Package identifier" FORCE)
+set(QGC_APP_DESCRIPTION "FlyCam AeroScope/AgroScope multi-vehicle ground control station for PX4 UAVs" CACHE STRING "Application description" FORCE)
+set(QGC_APP_COPYRIGHT "Copyright (c) 2026 FlyCam" CACHE STRING "Copyright notice" FORCE)
+set(QGC_ORG_NAME "FlyCam" CACHE STRING "Organization name" FORCE)
+set(QGC_ORG_DOMAIN "flycam.kz" CACHE STRING "Organization domain" FORCE)
+set(QGC_PACKAGE_NAME "kz.flycam.aeroscope.agroscope.controlcenter" CACHE STRING "Package identifier" FORCE)
 
 # First release targets Cube Orange + PX4 only.
 set(QGC_DISABLE_APM_PLUGIN_FACTORY ON CACHE BOOL "Disable ArduPilot firmware UI" FORCE)

@@ -216,7 +216,7 @@ Item {
             Image {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                source: "qrc:/flycam/branding/brand_lockup.png"
+                source: "qrc:/flycam/branding/flycam_logo.png"
                 fillMode: Image.PreserveAspectFit
                 mipmap: true
             }

@@ -1,4 +1,4 @@
-message(STATUS "FlyCam: Adding Satbayev University / FlyCam AeroScope/AgroScope custom build")
+message(STATUS "FlyCam: Adding AeroScope/AgroScope custom build")
 
 list(APPEND CUSTOM_RESOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/custom.qrc
