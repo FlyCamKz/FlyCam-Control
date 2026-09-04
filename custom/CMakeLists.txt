@@ -49,3 +49,29 @@ if(WIN32 AND FLYCAM_DISPATCHER_SERVER_EXECUTABLE)
         )
     endif()
 endif()
+
+set(FLYCAM_VIDEO_ANALYTICS_EXECUTABLE "" CACHE FILEPATH
+    "Prebuilt FlyCam video analytics executable to include in the installer"
+)
+if(WIN32 AND FLYCAM_VIDEO_ANALYTICS_EXECUTABLE)
+    if(EXISTS "${FLYCAM_VIDEO_ANALYTICS_EXECUTABLE}")
+        install(PROGRAMS "${FLYCAM_VIDEO_ANALYTICS_EXECUTABLE}"
+            DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        )
+        message(STATUS "FlyCam: Bundling video analytics: ${FLYCAM_VIDEO_ANALYTICS_EXECUTABLE}")
+    else()
+        message(FATAL_ERROR
+            "FlyCam video analytics executable not found: ${FLYCAM_VIDEO_ANALYTICS_EXECUTABLE}"
+        )
+    endif()
+endif()
+
+if(WIN32)
+    install(FILES
+        "${CMAKE_SOURCE_DIR}/analytics/README_RU.md"
+        "${CMAKE_SOURCE_DIR}/docs/certification/SECURITY_PROFILE_RU.md"
+        "${CMAKE_SOURCE_DIR}/docs/certification/VERIFICATION_PLAN_RU.md"
+        "${CMAKE_SOURCE_DIR}/docs/certification/TRACEABILITY_MATRIX_RU.md"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/FlyCam/docs"
+    )
+endif()

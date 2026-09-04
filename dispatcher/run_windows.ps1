@@ -3,13 +3,23 @@ param(
     [ValidateRange(1, 65535)]
     [int]$Port = 8088,
     [string]$ApiKey = $env:FLYCAM_API_KEY,
+    [string]$AdminKey = $env:FLYCAM_ADMIN_KEY,
+    [string]$IngestKey = $env:FLYCAM_INGEST_KEY,
+    [string]$ViewerKey = $env:FLYCAM_VIEWER_KEY,
+    [string]$OperatorKey = $env:FLYCAM_OPERATOR_KEY,
+    [string]$TlsCertificate = $env:FLYCAM_TLS_CERT,
+    [string]$TlsPrivateKey = $env:FLYCAM_TLS_KEY,
+    [string]$TlsCa = $env:FLYCAM_TLS_CA,
+    [switch]$RequireClientCertificate,
     [string]$DatabasePath = ""
 )
 
 $ErrorActionPreference = "Stop"
 
-if (($ListenAddress -ne "127.0.0.1") -and ($ListenAddress -ne "localhost") -and (-not $ApiKey)) {
-    throw "An API key is required when listening outside localhost."
+if (($ListenAddress -ne "127.0.0.1") -and ($ListenAddress -ne "localhost") -and
+    (-not $ApiKey) -and (-not $AdminKey) -and (-not $IngestKey) -and (-not $ViewerKey) -and (-not $OperatorKey) -and
+    (-not $RequireClientCertificate)) {
+    throw "An API key or required client certificate is needed outside localhost."
 }
 
 if (-not $DatabasePath) {
@@ -27,6 +37,30 @@ $serverArguments = @(
 )
 if ($ApiKey) {
     $serverArguments += @("--api-key", $ApiKey)
+}
+if ($AdminKey) {
+    $serverArguments += @("--admin-key", $AdminKey)
+}
+if ($IngestKey) {
+    $serverArguments += @("--ingest-key", $IngestKey)
+}
+if ($ViewerKey) {
+    $serverArguments += @("--viewer-key", $ViewerKey)
+}
+if ($OperatorKey) {
+    $serverArguments += @("--operator-key", $OperatorKey)
+}
+if ($TlsCertificate) {
+    $serverArguments += @("--tls-cert", $TlsCertificate)
+}
+if ($TlsPrivateKey) {
+    $serverArguments += @("--tls-key", $TlsPrivateKey)
+}
+if ($TlsCa) {
+    $serverArguments += @("--tls-ca", $TlsCa)
+}
+if ($RequireClientCertificate) {
+    $serverArguments += "--require-client-cert"
 }
 
 if (Get-Command py -ErrorAction SilentlyContinue) {

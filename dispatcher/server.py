@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import argparse
 import hmac
+import ipaddress
 import json
 import logging
 import os
+import re
 import sqlite3
+import ssl
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -22,6 +25,14 @@ from urllib.parse import parse_qs, urlparse
 LOGGER = logging.getLogger("flycam.dispatcher")
 MAX_REQUEST_BYTES = 1024 * 1024
 MISSION_STATUSES = {"planned", "assigned", "in_progress", "completed", "cancelled"}
+ROLE_PERMISSIONS = {
+    "viewer": frozenset({"read"}),
+    "ingest": frozenset({"ingest"}),
+    "operator": frozenset({"read", "mission"}),
+    "admin": frozenset({"read", "ingest", "mission", "admin"}),
+}
+DETECTION_CLASS_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+MAX_DETECTIONS_PER_REQUEST = 100
 
 
 def utc_now() -> str:
@@ -63,6 +74,7 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._telemetry_insert_count = 0
         self._event_insert_count = 0
+        self._detection_insert_count = 0
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -121,6 +133,34 @@ class Database:
                     payload TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS events_time ON events(received_at DESC);
+
+                CREATE TABLE IF NOT EXISTS detections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    received_at TEXT NOT NULL,
+                    vehicle_id INTEGER NOT NULL,
+                    object_class TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    source TEXT,
+                    payload TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS detections_vehicle_time
+                    ON detections(vehicle_id, received_at DESC);
+                CREATE INDEX IF NOT EXISTS detections_class_time
+                    ON detections(object_class, received_at DESC);
+
+                CREATE TABLE IF NOT EXISTS security_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    occurred_at TEXT NOT NULL,
+                    remote_address TEXT NOT NULL,
+                    method TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    role TEXT,
+                    detail TEXT
+                );
+                CREATE INDEX IF NOT EXISTS security_audit_time
+                    ON security_audit(occurred_at DESC);
                 """
             )
 
@@ -268,10 +308,142 @@ class Database:
             for row in rows
         ]
 
+    def store_detections(self, detections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        received_at = utc_now()
+        stored: list[dict[str, Any]] = []
+        telemetry_cache: dict[int, tuple[dict[str, Any], str] | None] = {}
+        with self._connection() as connection:
+            for detection in detections:
+                enriched_detection = dict(detection)
+                vehicle_id = int(enriched_detection["vehicleId"])
+                if vehicle_id not in telemetry_cache:
+                    telemetry_row = connection.execute(
+                        "SELECT received_at, payload FROM telemetry_latest WHERE vehicle_id = ?",
+                        (vehicle_id,),
+                    ).fetchone()
+                    telemetry_cache[vehicle_id] = (
+                        (json.loads(telemetry_row["payload"]), telemetry_row["received_at"])
+                        if telemetry_row
+                        else None
+                    )
+                latest_telemetry = telemetry_cache[vehicle_id]
+                if latest_telemetry:
+                    telemetry_payload, telemetry_received_at = latest_telemetry
+                    for field in ("latitude", "longitude", "altitude"):
+                        if field not in enriched_detection and field in telemetry_payload:
+                            enriched_detection[field] = telemetry_payload[field]
+                    enriched_detection.setdefault("telemetryReceivedAt", telemetry_received_at)
+
+                payload_json = json.dumps(
+                    enriched_detection, ensure_ascii=False, separators=(",", ":")
+                )
+                cursor = connection.execute(
+                    """
+                    INSERT INTO detections(
+                        received_at, vehicle_id, object_class, confidence, source, payload
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        received_at,
+                        enriched_detection["vehicleId"],
+                        enriched_detection["objectClass"],
+                        enriched_detection["confidence"],
+                        enriched_detection.get("source"),
+                        payload_json,
+                    ),
+                )
+                stored.append(
+                    {"id": int(cursor.lastrowid), "receivedAt": received_at, **enriched_detection}
+                )
+                self._detection_insert_count += 1
+            if self._detection_insert_count >= 1000:
+                self._apply_retention(connection)
+                self._detection_insert_count = 0
+        return stored
+
+    def list_detections(
+        self,
+        limit: int,
+        vehicle_id: int | None = None,
+        object_class: str | None = None,
+    ) -> list[dict[str, Any]]:
+        filters: list[str] = []
+        values: list[Any] = []
+        if vehicle_id is not None:
+            filters.append("vehicle_id = ?")
+            values.append(vehicle_id)
+        if object_class:
+            filters.append("object_class = ?")
+            values.append(object_class)
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+        values.append(limit)
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"SELECT id, received_at, payload FROM detections "
+                f"{where_clause} ORDER BY id DESC LIMIT ?",
+                values,
+            ).fetchall()
+        return [
+            {"id": row["id"], "receivedAt": row["received_at"], **json.loads(row["payload"])}
+            for row in rows
+        ]
+
+    def store_security_audit(
+        self,
+        *,
+        remote_address: str,
+        method: str,
+        path: str,
+        action: str,
+        outcome: str,
+        role: str | None = None,
+        detail: str | None = None,
+    ) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO security_audit(
+                    occurred_at, remote_address, method, path, action, outcome, role, detail
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    utc_now(),
+                    remote_address[:100],
+                    method[:16],
+                    path[:500],
+                    action[:100],
+                    outcome[:32],
+                    role[:32] if role else None,
+                    detail[:500] if detail else None,
+                ),
+            )
+
+    def list_security_audit(self, limit: int) -> list[dict[str, Any]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM security_audit ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "occurredAt": row["occurred_at"],
+                "remoteAddress": row["remote_address"],
+                "method": row["method"],
+                "path": row["path"],
+                "action": row["action"],
+                "outcome": row["outcome"],
+                "role": row["role"],
+                "detail": row["detail"],
+            }
+            for row in rows
+        ]
+
     def _apply_retention(self, connection: sqlite3.Connection) -> None:
         cutoff = (datetime.now(UTC) - timedelta(days=self.retention_days)).isoformat()
         connection.execute("DELETE FROM telemetry_history WHERE received_at < ?", (cutoff,))
         connection.execute("DELETE FROM events WHERE received_at < ?", (cutoff,))
+        connection.execute("DELETE FROM detections WHERE received_at < ?", (cutoff,))
+        connection.execute("DELETE FROM security_audit WHERE occurred_at < ?", (cutoff,))
 
 
 def _mission_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -347,6 +519,78 @@ def _validate_event(payload: Any) -> dict[str, Any]:
     return payload
 
 
+def _validate_detection(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("each detection must be a JSON object")
+    if "vehicleId" not in payload:
+        raise ValueError("vehicleId is required")
+    payload["vehicleId"] = _validate_vehicle_id(payload["vehicleId"])
+
+    object_class = str(payload.get("objectClass", "")).strip().lower()
+    if not DETECTION_CLASS_PATTERN.fullmatch(object_class):
+        raise ValueError("objectClass must use 1-64 lowercase letters, digits, '_' or '-'")
+    payload["objectClass"] = object_class
+
+    try:
+        confidence = float(payload.get("confidence"))
+    except (TypeError, ValueError) as error:
+        raise ValueError("confidence must be numeric") from error
+    if not 0.0 <= confidence <= 1.0:
+        raise ValueError("confidence must be between 0 and 1")
+    payload["confidence"] = confidence
+
+    bbox = payload.get("bbox")
+    if bbox is not None:
+        if not isinstance(bbox, dict):
+            raise ValueError("bbox must be an object")
+        normalized_bbox: dict[str, float] = {}
+        for field in ("x", "y", "width", "height"):
+            try:
+                value = float(bbox[field])
+            except (KeyError, TypeError, ValueError) as error:
+                raise ValueError(f"bbox.{field} must be numeric") from error
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"bbox.{field} must be between 0 and 1")
+            normalized_bbox[field] = value
+        if normalized_bbox["x"] + normalized_bbox["width"] > 1.001:
+            raise ValueError("bbox exceeds frame width")
+        if normalized_bbox["y"] + normalized_bbox["height"] > 1.001:
+            raise ValueError("bbox exceeds frame height")
+        payload["bbox"] = normalized_bbox
+
+    for field, minimum, maximum in (
+        ("latitude", -90.0, 90.0),
+        ("longitude", -180.0, 180.0),
+    ):
+        if field in payload and payload[field] is not None:
+            try:
+                value = float(payload[field])
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"{field} must be numeric") from error
+            if not minimum <= value <= maximum:
+                raise ValueError(f"{field} is outside the allowed range")
+            payload[field] = value
+
+    if "source" in payload:
+        payload["source"] = str(payload["source"])[:200]
+    if "trackId" in payload:
+        payload["trackId"] = str(payload["trackId"])[:100]
+    payload["timestampUtc"] = str(payload.get("timestampUtc") or utc_now())[:64]
+    return payload
+
+
+def _validate_detection_batch(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, dict) and "detections" in payload:
+        raw_detections = payload["detections"]
+    else:
+        raw_detections = [payload]
+    if not isinstance(raw_detections, list) or not raw_detections:
+        raise ValueError("detections must be a non-empty array")
+    if len(raw_detections) > MAX_DETECTIONS_PER_REQUEST:
+        raise ValueError(f"no more than {MAX_DETECTIONS_PER_REQUEST} detections per request")
+    return [_validate_detection(detection) for detection in raw_detections]
+
+
 def _validate_vehicle_id(value: Any) -> int:
     if isinstance(value, bool):
         raise ValueError("vehicleId must be an integer")
@@ -363,9 +607,12 @@ def _validate_vehicle_id(value: Any) -> int:
 
 class DispatcherRequestHandler(BaseHTTPRequestHandler):
     database: Database
-    api_key: str
+    api_keys: tuple[tuple[str, str], ...]
     web_root: Path
-    server_version = "FlyCamDispatcher/1.0"
+    tls_enabled: bool
+    client_certificate_required: bool
+    authenticated_role: str | None = None
+    server_version = "FlyCamDispatcher/1.1"
 
     def log_message(self, message_format: str, *args: Any) -> None:
         LOGGER.info("%s - %s", self.address_string(), message_format % args)
@@ -376,9 +623,18 @@ class DispatcherRequestHandler(BaseHTTPRequestHandler):
             self._serve_file(self.web_root / "index.html", "text/html; charset=utf-8")
             return
         if parsed.path == "/health":
-            self._send_json(HTTPStatus.OK, {"status": "ok", "timeUtc": utc_now()})
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "status": "ok",
+                    "timeUtc": utc_now(),
+                    "tls": self.tls_enabled,
+                    "clientCertificateRequired": self.client_certificate_required,
+                },
+            )
             return
-        if not self._authorized():
+        permission = "admin" if parsed.path == "/api/v1/security/audit" else "read"
+        if not self._authorized(permission):
             return
 
         query = parse_qs(parsed.query)
@@ -400,12 +656,37 @@ class DispatcherRequestHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/v1/events":
             limit = _bounded_limit(query, default=100, maximum=1000)
             self._send_json(HTTPStatus.OK, {"events": self.database.list_events(limit)})
+        elif parsed.path == "/api/v1/detections":
+            limit = _bounded_limit(query, default=100, maximum=5000)
+            try:
+                vehicle_id_value = query.get("vehicleId", [""])[0]
+                vehicle_id = _validate_vehicle_id(vehicle_id_value) if vehicle_id_value else None
+                object_class = query.get("class", [""])[0].strip().lower() or None
+                if object_class and not DETECTION_CLASS_PATTERN.fullmatch(object_class):
+                    raise ValueError("invalid class filter")
+            except ValueError as error:
+                self._send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "detections": self.database.list_detections(
+                        limit, vehicle_id=vehicle_id, object_class=object_class
+                    )
+                },
+            )
+        elif parsed.path == "/api/v1/security/audit":
+            limit = _bounded_limit(query, default=100, maximum=1000)
+            self._send_json(
+                HTTPStatus.OK, {"audit": self.database.list_security_audit(limit)}
+            )
         else:
             self._send_error_json(HTTPStatus.NOT_FOUND, "not found")
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        if not self._authorized():
+        permission = "mission" if parsed.path == "/api/v1/missions" else "ingest"
+        if not self._authorized(permission):
             return
         try:
             payload = self._read_json()
@@ -415,10 +696,20 @@ class DispatcherRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.ACCEPTED, {"accepted": True})
             elif parsed.path == "/api/v1/missions":
                 mission = self.database.create_mission(_validate_mission(payload))
+                self._audit("mission.create", "allowed", detail=f"missionId={mission['id']}")
                 self._send_json(HTTPStatus.CREATED, mission)
             elif parsed.path == "/api/v1/events":
                 event = self.database.store_event(_validate_event(payload))
                 self._send_json(HTTPStatus.CREATED, event)
+            elif parsed.path == "/api/v1/detections":
+                detections = self.database.store_detections(_validate_detection_batch(payload))
+                self._send_json(
+                    HTTPStatus.CREATED,
+                    {
+                        "accepted": len(detections),
+                        "detectionIds": [detection["id"] for detection in detections],
+                    },
+                )
             else:
                 self._send_error_json(HTTPStatus.NOT_FOUND, "not found")
         except ValueError as error:
@@ -426,7 +717,7 @@ class DispatcherRequestHandler(BaseHTTPRequestHandler):
 
     def do_PATCH(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        if not self._authorized():
+        if not self._authorized("mission"):
             return
         parts = parsed.path.strip("/").split("/")
         if len(parts) != 4 or parts[:3] != ["api", "v1", "missions"]:
@@ -436,23 +727,56 @@ class DispatcherRequestHandler(BaseHTTPRequestHandler):
             mission_id = int(parts[3])
             payload = _validate_mission(self._read_json(), partial=True)
             mission = self.database.update_mission(mission_id, payload)
+            self._audit("mission.update", "allowed", detail=f"missionId={mission_id}")
             self._send_json(HTTPStatus.OK, mission)
         except ValueError as error:
             self._send_error_json(HTTPStatus.BAD_REQUEST, str(error))
         except KeyError:
             self._send_error_json(HTTPStatus.NOT_FOUND, "mission not found")
 
-    def _authorized(self) -> bool:
-        if not self.api_key:
+    def _authorized(self, required_permission: str) -> bool:
+        self.authenticated_role = None
+        if not self.api_keys:
             return True
         supplied_key = self.headers.get("X-API-Key", "")
         authorization = self.headers.get("Authorization", "")
         if authorization.startswith("Bearer "):
             supplied_key = authorization[7:]
-        if hmac.compare_digest(supplied_key.encode(), self.api_key.encode()):
+
+        matched_role: str | None = None
+        supplied_bytes = supplied_key.encode("utf-8")
+        for role, configured_key in self.api_keys:
+            if hmac.compare_digest(supplied_bytes, configured_key.encode("utf-8")):
+                matched_role = role
+        if matched_role is None:
+            self._audit("authenticate", "denied", detail="invalid-or-missing-key")
+            self._send_error_json(HTTPStatus.UNAUTHORIZED, "invalid or missing API key")
+            return False
+
+        self.authenticated_role = matched_role
+        if required_permission in ROLE_PERMISSIONS[matched_role]:
             return True
-        self._send_error_json(HTTPStatus.UNAUTHORIZED, "invalid or missing API key")
+        self._audit(
+            "authorize",
+            "denied",
+            detail=f"permission={required_permission}",
+        )
+        self._send_error_json(HTTPStatus.FORBIDDEN, "API key does not grant this operation")
         return False
+
+    def _audit(self, action: str, outcome: str, detail: str | None = None) -> None:
+        try:
+            self.database.store_security_audit(
+                remote_address=str(self.client_address[0]),
+                method=self.command,
+                path=urlparse(self.path).path,
+                action=action,
+                outcome=outcome,
+                role=self.authenticated_role,
+                detail=detail,
+            )
+        except (OSError, sqlite3.Error):
+            LOGGER.exception("Unable to write security audit record")
 
     def _read_json(self) -> Any:
         try:
@@ -499,6 +823,9 @@ class DispatcherRequestHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        if self.tls_enabled:
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; connect-src 'self'; img-src 'self'; "
@@ -514,13 +841,69 @@ def _bounded_limit(query: dict[str, list[str]], default: int, maximum: int) -> i
         return default
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_loopback_host(host: str) -> bool:
+    if host.strip().lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def create_server(
     host: str,
     port: int,
     database_path: Path,
     api_key: str = "",
     retention_days: int = 30,
+    *,
+    admin_key: str = "",
+    ingest_key: str = "",
+    viewer_key: str = "",
+    operator_key: str = "",
+    tls_cert: Path | None = None,
+    tls_key: Path | None = None,
+    tls_ca: Path | None = None,
+    require_client_certificate: bool = False,
+    allow_insecure_network: bool = False,
 ) -> ThreadingHTTPServer:
+    api_keys = tuple(
+        (role, key)
+        for role, key in (
+            ("viewer", viewer_key),
+            ("ingest", ingest_key),
+            ("operator", operator_key),
+            ("admin", admin_key),
+            ("admin", api_key),
+        )
+        if key
+    )
+    key_values = [key for _, key in api_keys]
+    if len(key_values) != len(set(key_values)):
+        raise ValueError("each API role must use a different key")
+    if tls_key and not tls_cert:
+        raise ValueError("--tls-key requires --tls-cert")
+    if (tls_ca or require_client_certificate) and not tls_cert:
+        raise ValueError("client certificate options require --tls-cert")
+    if require_client_certificate and not tls_ca:
+        raise ValueError("--require-client-cert requires --tls-ca")
+    if (
+        not _is_loopback_host(host)
+        and not api_keys
+        and not require_client_certificate
+        and not allow_insecure_network
+    ):
+        raise ValueError(
+            "refusing unauthenticated non-loopback listener; configure an API key or mTLS"
+        )
+
     database = Database(database_path, retention_days)
     web_root = Path(__file__).resolve().parent / "web"
 
@@ -528,10 +911,29 @@ def create_server(
         pass
 
     ConfiguredHandler.database = database
-    ConfiguredHandler.api_key = api_key
+    ConfiguredHandler.api_keys = api_keys
     ConfiguredHandler.web_root = web_root
+    ConfiguredHandler.tls_enabled = bool(tls_cert)
+    ConfiguredHandler.client_certificate_required = require_client_certificate
     server = ThreadingHTTPServer((host, port), ConfiguredHandler)
     server.daemon_threads = True
+
+    if tls_cert:
+        try:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            context.load_cert_chain(
+                certfile=str(tls_cert), keyfile=str(tls_key) if tls_key else None
+            )
+            if tls_ca:
+                context.load_verify_locations(cafile=str(tls_ca))
+                context.verify_mode = (
+                    ssl.CERT_REQUIRED if require_client_certificate else ssl.CERT_OPTIONAL
+                )
+            server.socket = context.wrap_socket(server.socket, server_side=True)
+        except Exception:
+            server.server_close()
+            raise
     return server
 
 
@@ -545,6 +947,24 @@ def parse_args() -> argparse.Namespace:
         default=default_database_path(),
     )
     parser.add_argument("--api-key", default=os.getenv("FLYCAM_API_KEY", ""))
+    parser.add_argument("--admin-key", default=os.getenv("FLYCAM_ADMIN_KEY", ""))
+    parser.add_argument("--ingest-key", default=os.getenv("FLYCAM_INGEST_KEY", ""))
+    parser.add_argument("--viewer-key", default=os.getenv("FLYCAM_VIEWER_KEY", ""))
+    parser.add_argument("--operator-key", default=os.getenv("FLYCAM_OPERATOR_KEY", ""))
+    parser.add_argument("--tls-cert", type=Path, default=os.getenv("FLYCAM_TLS_CERT") or None)
+    parser.add_argument("--tls-key", type=Path, default=os.getenv("FLYCAM_TLS_KEY") or None)
+    parser.add_argument("--tls-ca", type=Path, default=os.getenv("FLYCAM_TLS_CA") or None)
+    parser.add_argument(
+        "--require-client-cert",
+        action="store_true",
+        default=_env_flag("FLYCAM_REQUIRE_CLIENT_CERT"),
+    )
+    parser.add_argument(
+        "--allow-insecure-network",
+        action="store_true",
+        default=_env_flag("FLYCAM_ALLOW_INSECURE_NETWORK"),
+        help="allow a non-loopback listener without API keys (unsafe; isolated test networks only)",
+    )
     parser.add_argument(
         "--retention-days",
         type=int,
@@ -556,8 +976,27 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     configure_logging(args.db)
-    server = create_server(args.host, args.port, args.db, args.api_key, args.retention_days)
-    LOGGER.info("FlyCam dispatcher listening on http://%s:%s", args.host, server.server_port)
+    try:
+        server = create_server(
+            args.host,
+            args.port,
+            args.db,
+            args.api_key,
+            args.retention_days,
+            admin_key=args.admin_key,
+            ingest_key=args.ingest_key,
+            viewer_key=args.viewer_key,
+            operator_key=args.operator_key,
+            tls_cert=args.tls_cert,
+            tls_key=args.tls_key,
+            tls_ca=args.tls_ca,
+            require_client_certificate=args.require_client_cert,
+            allow_insecure_network=args.allow_insecure_network,
+        )
+    except (OSError, ssl.SSLError, ValueError) as error:
+        raise SystemExit(f"Dispatcher configuration error: {error}") from error
+    scheme = "https" if args.tls_cert else "http"
+    LOGGER.info("FlyCam dispatcher listening on %s://%s:%s", scheme, args.host, server.server_port)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
