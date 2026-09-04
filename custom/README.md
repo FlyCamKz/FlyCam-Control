@@ -19,7 +19,9 @@ Windows display title: **FlyCam — AeroScope/AgroScope Drone Control Center**
 - Protected Futaba S3001 cargo-bay control through PX4 generic actuators
 - Local JSONL cargo command audit log
 - Optional telemetry and event uplink for every connected vehicle to the FlyCam dispatcher
-- Video backend disabled until a camera is selected
+- Standalone RTSP/HTTP/USB/file video analytics for people and vehicles (ONNX model supplied separately)
+- TLS 1.2+, optional mTLS, role-scoped API keys and security audit for the dispatcher
+- Integrated QGC video display remains disabled until the production camera/protocol is selected
 - ArduPilot UI disabled
 
 The direct **Open** action is available only after PX4 finishes connecting and
@@ -31,7 +33,10 @@ that the door actually moved.
 See [HARDWARE_SETUP_RU.md](HARDWARE_SETUP_RU.md) before connecting or testing the
 servo. The remaining acceptance work is listed in
 [RELEASE_CHECKLIST_RU.md](RELEASE_CHECKLIST_RU.md). The dispatcher service and
-its tests are in [`../dispatcher`](../dispatcher).
+its tests are in [`../dispatcher`](../dispatcher). Video analytics is documented
+in [`../analytics/README_RU.md`](../analytics/README_RU.md); the security and
+certification-preparation set starts at
+[`../docs/certification/SECURITY_PROFILE_RU.md`](../docs/certification/SECURITY_PROFILE_RU.md).
 
 ## Configure
 

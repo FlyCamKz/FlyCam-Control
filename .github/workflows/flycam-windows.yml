@@ -9,6 +9,8 @@ on:
     paths:
       - 'custom/**'
       - 'dispatcher/**'
+      - 'analytics/**'
+      - 'docs/certification/**'
       - 'src/**'
       - 'cmake/**'
       - 'CMakeLists.txt'
@@ -63,9 +65,9 @@ jobs:
           build-type: Release
           cache-variant: flycam
 
-      - name: Test dispatcher server
+      - name: Test dispatcher and analytics metadata
         shell: pwsh
-        run: python -m unittest -v dispatcher.test_server
+        run: python -m unittest -v dispatcher.test_server analytics.test_video_analytics
 
       - name: Package dispatcher server
         shell: pwsh
@@ -91,6 +93,31 @@ jobs:
           $dispatcherExe = (Resolve-Path (Join-Path $distDir "FlyCam-Dispatcher-Server.exe")).Path.Replace('\', '/')
           "FLYCAM_DISPATCHER_EXE=$dispatcherExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Package video analytics
+        shell: pwsh
+        run: |
+          uv pip install --python python pyinstaller==6.16.0 -r analytics/requirements.txt
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          $distDir = Join-Path $env:RUNNER_TEMP "flycam-analytics-dist"
+          $workDir = Join-Path $env:RUNNER_TEMP "flycam-analytics-build"
+          $specDir = Join-Path $env:RUNNER_TEMP "flycam-analytics-spec"
+          python -m PyInstaller `
+            --clean `
+            --noconfirm `
+            --onefile `
+            --name FlyCam-Video-Analytics `
+            --distpath $distDir `
+            --workpath $workDir `
+            --specpath $specDir `
+            analytics/video_analytics.py
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          $analyticsExe = (Resolve-Path (Join-Path $distDir "FlyCam-Video-Analytics.exe")).Path.Replace('\', '/')
+          "FLYCAM_ANALYTICS_EXE=$analyticsExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Configure custom build
         uses: ./.github/actions/cmake-configure
         with:
@@ -100,6 +127,7 @@ jobs:
             -DQGC_BUILD_TESTING=OFF
             -DQGC_ENABLE_GST_VIDEOSTREAMING=OFF
             -DFLYCAM_DISPATCHER_SERVER_EXECUTABLE=${{ env.FLYCAM_DISPATCHER_EXE }}
+            -DFLYCAM_VIDEO_ANALYTICS_EXECUTABLE=${{ env.FLYCAM_ANALYTICS_EXE }}
 
       - name: Build
         uses: ./.github/actions/cmake-build
@@ -139,6 +167,15 @@ jobs:
           $installedDispatcher = Join-Path $installDir "bin\FlyCam-Dispatcher-Server.exe"
           if (-not (Test-Path $installedDispatcher)) {
             throw "Installed FlyCam dispatcher server was not found"
+          }
+
+          $installedAnalytics = Join-Path $installDir "bin\FlyCam-Video-Analytics.exe"
+          if (-not (Test-Path $installedAnalytics)) {
+            throw "Installed FlyCam video analytics executable was not found"
+          }
+          & $installedAnalytics --self-test
+          if ($LASTEXITCODE -ne 0) {
+            throw "FlyCam video analytics self-test failed"
           }
 
           $dispatcherTestDir = Join-Path "${{ runner.temp }}" "flycam-dispatcher-test"
@@ -192,6 +229,21 @@ jobs:
             if (@($vehicles.vehicles).Count -ne 2) {
               throw "FlyCam dispatcher multi-vehicle telemetry round-trip failed"
             }
+
+            $detection = @{
+              vehicleId = 2
+              objectClass = "person"
+              confidence = 0.91
+              source = "ci-camera"
+              bbox = @{ x = 0.1; y = 0.2; width = 0.3; height = 0.4 }
+            } | ConvertTo-Json -Depth 3 -Compress
+            Invoke-RestMethod -Method Post `
+              -Uri "http://127.0.0.1:18088/api/v1/detections" `
+              -ContentType "application/json" -Body $detection | Out-Null
+            $detections = Invoke-RestMethod -Uri "http://127.0.0.1:18088/api/v1/detections"
+            if (@($detections.detections).Count -ne 1 -or $detections.detections[0].objectClass -ne "person") {
+              throw "FlyCam dispatcher detection round-trip failed"
+            }
           } finally {
             if ($dispatcherProcess -and -not $dispatcherProcess.HasExited) {
               Stop-Process -Id $dispatcherProcess.Id -Force
@@ -203,6 +255,8 @@ jobs:
           Copy-Item $installer.FullName (Join-Path $artifactDir "FlyCam-AeroScope-AgroScope-Control-Center-Installer-x64.exe")
           Copy-Item $installedBinary (Join-Path $artifactDir "FlyCam-AeroScope-AgroScope-Control-Center.exe")
           Copy-Item $installedDispatcher (Join-Path $artifactDir "FlyCam-Dispatcher-Server.exe")
+          Copy-Item $installedAnalytics (Join-Path $artifactDir "FlyCam-Video-Analytics.exe")
+          Copy-Item "analytics\README_RU.md" (Join-Path $artifactDir "FlyCam-Video-Analytics-README_RU.md")
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v7

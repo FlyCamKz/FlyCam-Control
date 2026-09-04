@@ -1,8 +1,9 @@
 # FlyCam Dispatcher
 
 Local or server-side dispatcher for FlyCam AeroScope/AgroScope Drone Control Center. It stores live
-vehicle telemetry, a retained telemetry history, delivery missions and operator
-events in SQLite. The browser dashboard is available at `http://127.0.0.1:8088/`.
+vehicle telemetry, a retained telemetry history, delivery missions, operator
+events, video-analytics detections and a security audit in SQLite. The browser
+dashboard is available at `http://127.0.0.1:8088/`.
 
 The service deliberately has no endpoint for flight control or cargo-bay actuation.
 
@@ -24,15 +25,33 @@ Requires Python 3.11 or newer and no third-party packages.
 python server.py --host 127.0.0.1 --port 8088
 ```
 
-For a network-accessible deployment, set a strong API key and place the service
-behind HTTPS or a VPN:
+For a network-accessible deployment, use TLS and separate strong keys for each
+role. The server refuses an unauthenticated non-loopback listener by default:
 
 ```bash
-FLYCAM_API_KEY="replace-with-a-long-random-key" \
-python server.py --host 0.0.0.0 --port 8088
+FLYCAM_TLS_CERT="/etc/flycam/server.pem" \
+FLYCAM_TLS_KEY="/etc/flycam/server.key" \
+FLYCAM_ADMIN_KEY="a-long-random-admin-key" \
+FLYCAM_INGEST_KEY="a-different-long-random-key" \
+FLYCAM_VIEWER_KEY="another-long-random-key" \
+FLYCAM_OPERATOR_KEY="third-long-random-key" \
+python server.py --host 0.0.0.0 --port 8443
 ```
 
-Enter the same URL and API key in **Cargo Bay → Server** inside the custom QGC.
+Enter the HTTPS URL and ingest key in **Cargo Bay → Server** inside the custom
+QGC. An internal CA must be installed in the trusted Windows certificate store.
+The legacy `FLYCAM_API_KEY` remains available and grants the `admin` role;
+new deployments should use the explicit `FLYCAM_ADMIN_KEY`.
+
+Roles are intentionally separated:
+
+- `ingest`: POST telemetry, events and detections;
+- `viewer`: read telemetry, missions, events and detections;
+- `operator`: viewer rights plus create/update missions;
+- `admin`: every operation plus security-audit access.
+
+Optional mTLS is enabled with `FLYCAM_TLS_CA=/path/ca.pem` and
+`FLYCAM_REQUIRE_CLIENT_CERT=1`. TLS requires only Python's standard library.
 
 On Windows, the helper script creates the data directory and starts the local
 service from source when the packaged executable is not available:
@@ -41,9 +60,9 @@ service from source when the packaged executable is not available:
 .\dispatcher\run_windows.ps1
 ```
 
-Then open <http://127.0.0.1:8088/>. To listen on a network interface, pass
-`-ListenAddress 0.0.0.0 -ApiKey "a-long-random-key"` and use a firewall plus
-HTTPS or VPN.
+Then open <http://127.0.0.1:8088/>. The PowerShell helper also accepts role keys,
+certificate paths and `-RequireClientCertificate`; see its parameter list. Keep
+the service behind a firewall even when TLS is enabled.
 
 ## Docker
 
@@ -64,11 +83,19 @@ binding only when firewall, authentication and TLS/VPN protection are in place.
 - `POST|GET /api/v1/missions`
 - `PATCH /api/v1/missions/{id}`
 - `POST|GET /api/v1/events`
+- `POST|GET /api/v1/detections`
+- `GET /api/v1/security/audit` (`admin` only)
 
 When `FLYCAM_API_KEY` is set, pass it in `X-API-Key` or as a Bearer token.
+Role-specific keys use the same header. Detection POST supports one object or a
+batch `{ "detections": [...] }` with up to 100 objects.
+
+The bundled video sidecar is documented in [`../analytics/README_RU.md`](../analytics/README_RU.md).
+Deployment and certification boundaries are described in
+[`../docs/certification/SECURITY_PROFILE_RU.md`](../docs/certification/SECURITY_PROFILE_RU.md).
 
 ## Test
 
 ```bash
-python -m unittest -v dispatcher.test_server
+python -m unittest -v dispatcher.test_server analytics.test_video_analytics
 ```

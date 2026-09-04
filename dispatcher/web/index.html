@@ -5,14 +5,14 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>FlyCam AeroScope/AgroScope — диспетчерский центр</title>
   <style>
-    :root { color-scheme: light; --blue:#0b68ad; --ink:#17212b; --muted:#66717d; --line:#dbe2e8; --bg:#f3f6f8; --ok:#16845b; --warn:#ce7a00; }
+    :root { color-scheme: light; --blue:#0b68ad; --ink:#17212b; --muted:#66717d; --line:#dbe2e8; --bg:#f3f6f8; --ok:#16845b; --warn:#ce7a00; --danger:#b42318; }
     * { box-sizing:border-box; }
     body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; }
     header { background:white; border-bottom:1px solid var(--line); padding:14px 24px; display:flex; gap:20px; align-items:center; justify-content:space-between; }
     header h1 { margin:0; font-size:20px; }
     header small { color:var(--muted); }
     main { max-width:1500px; margin:auto; padding:20px; }
-    .grid { display:grid; grid-template-columns:repeat(4,minmax(170px,1fr)); gap:14px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:14px; }
     .card { background:white; border:1px solid var(--line); border-radius:12px; padding:16px; box-shadow:0 2px 8px #2030400b; }
     .metric { font-size:26px; font-weight:700; margin-top:8px; }
     .muted { color:var(--muted); }
@@ -29,6 +29,8 @@
     button { background:var(--blue); color:white; border-color:var(--blue); cursor:pointer; font-weight:600; }
     #connection { font-weight:600; }
     #connection.error { color:#b22; }
+    .confidence { font-variant-numeric:tabular-nums; font-weight:700; }
+    .alert-high { color:var(--danger); }
     @media(max-width:900px) { .grid { grid-template-columns:repeat(2,1fr); } form { grid-template-columns:1fr; } .table-wrap { overflow:auto; } }
   </style>
 </head>
@@ -42,6 +44,7 @@
       <div class="card"><span class="muted">БПЛА на связи</span><div class="metric" id="vehicleCount">0</div></div>
       <div class="card"><span class="muted">В полёте</span><div class="metric" id="flyingCount">0</div></div>
       <div class="card"><span class="muted">Активные задания</span><div class="metric" id="missionCount">0</div></div>
+      <div class="card"><span class="muted">Обнаружения (лента)</span><div class="metric" id="detectionCount">0</div></div>
       <div class="card"><span class="muted">Последнее обновление</span><div class="metric" id="updatedAt">—</div></div>
     </div>
 
@@ -64,6 +67,11 @@
     <section class="section card">
       <h2>Задания</h2>
       <div class="table-wrap"><table><thead><tr><th>ID</th><th>Название</th><th>Статус</th><th>БПЛА</th><th>Маршрут</th><th>Обновлено</th></tr></thead><tbody id="missions"></tbody></table></div>
+    </section>
+
+    <section class="section card">
+      <h2>Видеоаналитика: люди и транспорт</h2>
+      <div class="table-wrap"><table><thead><tr><th>Время</th><th>БПЛА</th><th>Класс</th><th>Уверенность</th><th>Источник</th><th>Координаты БПЛА</th><th>Модель</th></tr></thead><tbody id="detections"></tbody></table></div>
     </section>
 
     <section class="section card">
@@ -142,12 +150,36 @@
       }
     }
 
+    function renderDetections(detections) {
+      const body=el('detections'); body.replaceChildren();
+      const labels={person:'Человек',bicycle:'Велосипед',car:'Автомобиль',motorcycle:'Мотоцикл',bus:'Автобус',truck:'Грузовик'};
+      for (const detection of detections) {
+        const row=document.createElement('tr');
+        const confidence=document.createElement('span');
+        confidence.className='confidence'+(Number(detection.confidence)>=0.8?' alert-high':'');
+        confidence.textContent=`${(Number(detection.confidence)*100).toFixed(1)} %`;
+        const confidenceCell=document.createElement('td'); confidenceCell.append(confidence);
+        row.append(
+          td(new Date(detection.receivedAt).toLocaleString()),
+          td(detection.vehicleId),
+          td(labels[detection.objectClass]||detection.objectClass),
+          confidenceCell,
+          td(detection.source),
+          td(detection.latitude!=null?`${Number(detection.latitude).toFixed(6)}, ${Number(detection.longitude).toFixed(6)}`:'—'),
+          td(detection.modelName||'—')
+        );
+        body.append(row);
+      }
+      el('detectionCount').textContent=detections.length;
+    }
+
     async function refresh() {
       try {
-        const [vehicleData,missionData,eventData]=await Promise.all([api('/api/v1/vehicles'),api('/api/v1/missions'),api('/api/v1/events?limit=50')]);
-        renderVehicles(vehicleData.vehicles); renderMissions(missionData.missions); renderEvents(eventData.events);
+        const [health,vehicleData,missionData,eventData,detectionData]=await Promise.all([api('/health'),api('/api/v1/vehicles'),api('/api/v1/missions'),api('/api/v1/events?limit=50'),api('/api/v1/detections?limit=200')]);
+        renderVehicles(vehicleData.vehicles); renderMissions(missionData.missions); renderEvents(eventData.events); renderDetections(detectionData.detections);
         el('updatedAt').textContent=new Date().toLocaleTimeString();
-        el('connection').textContent='Сервер доступен'; el('connection').className='';
+        const secured=location.protocol==='https:'||health.tls;
+        el('connection').textContent=secured?'Сервер доступен · защищённый канал':'Сервер доступен · локальный HTTP'; el('connection').className='';
       } catch (error) {
         el('connection').textContent=`Нет связи: ${error.message}`; el('connection').className='error';
       }

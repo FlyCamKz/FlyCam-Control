@@ -37,11 +37,12 @@ class DispatcherServerTest(unittest.TestCase):
         path: str,
         payload: dict | None = None,
         authorized: bool = True,
+        api_key: str = "test-key",
     ) -> tuple[int, dict]:
         body = None if payload is None else json.dumps(payload).encode()
         headers = {"Content-Type": "application/json"}
         if authorized:
-            headers["X-API-Key"] = "test-key"
+            headers["X-API-Key"] = api_key
         request = urllib.request.Request(self.base_url + path, data=body, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=2) as response:
@@ -53,6 +54,7 @@ class DispatcherServerTest(unittest.TestCase):
         status, payload = self.request("GET", "/health", authorized=False)
         self.assertEqual(status, 200)
         self.assertEqual(payload["status"], "ok")
+        self.assertFalse(payload["tls"])
 
     def test_dashboard_is_served(self) -> None:
         with urllib.request.urlopen(self.base_url + "/", timeout=2) as response:
@@ -70,6 +72,11 @@ class DispatcherServerTest(unittest.TestCase):
         status, payload = self.request("GET", "/api/v1/vehicles", authorized=False)
         self.assertEqual(status, 401)
         self.assertIn("API key", payload["error"])
+
+        status, audit_payload = self.request("GET", "/api/v1/security/audit?limit=10")
+        self.assertEqual(status, 200)
+        self.assertEqual(audit_payload["audit"][0]["outcome"], "denied")
+        self.assertNotIn("test-key", json.dumps(audit_payload))
 
     def test_telemetry_round_trip(self) -> None:
         telemetry = {
@@ -150,6 +157,134 @@ class DispatcherServerTest(unittest.TestCase):
         )
         self.assertEqual(status, 400)
         self.assertIn("must be an integer", payload["error"])
+
+    def test_detection_batch_round_trip(self) -> None:
+        status, _ = self.request(
+            "POST",
+            "/api/v1/telemetry",
+            {"vehicleId": 2, "latitude": 43.2389, "longitude": 76.8897, "altitude": 120},
+        )
+        self.assertEqual(status, 202)
+        status, accepted = self.request(
+            "POST",
+            "/api/v1/detections",
+            {
+                "detections": [
+                    {
+                        "vehicleId": 2,
+                        "objectClass": "person",
+                        "confidence": 0.93,
+                        "source": "rtsp-camera-1",
+                        "bbox": {"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4},
+                    },
+                    {
+                        "vehicleId": 2,
+                        "objectClass": "car",
+                        "confidence": 0.88,
+                    },
+                ]
+            },
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(accepted["accepted"], 2)
+        self.assertEqual(len(accepted["detectionIds"]), 2)
+
+        status, payload = self.request(
+            "GET", "/api/v1/detections?vehicleId=2&class=person&limit=10"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["detections"]), 1)
+        self.assertEqual(payload["detections"][0]["objectClass"], "person")
+        self.assertEqual(payload["detections"][0]["bbox"]["width"], 0.3)
+        self.assertEqual(payload["detections"][0]["latitude"], 43.2389)
+        self.assertIn("telemetryReceivedAt", payload["detections"][0])
+
+    def test_detection_validation_rejects_invalid_bbox(self) -> None:
+        status, payload = self.request(
+            "POST",
+            "/api/v1/detections",
+            {
+                "vehicleId": 1,
+                "objectClass": "person",
+                "confidence": 0.8,
+                "bbox": {"x": 0.9, "y": 0.1, "width": 0.2, "height": 0.2},
+            },
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("frame width", payload["error"])
+
+    def test_role_scoped_keys_enforce_least_privilege(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        database_path = Path(self.temp_directory.name) / "roles.sqlite3"
+        self.server = create_server(
+            "127.0.0.1",
+            0,
+            database_path,
+            admin_key="admin-secret",
+            ingest_key="ingest-secret",
+            viewer_key="viewer-secret",
+            operator_key="operator-secret",
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_port}"
+
+        status, _ = self.request(
+            "POST",
+            "/api/v1/telemetry",
+            {"vehicleId": 1},
+            api_key="ingest-secret",
+        )
+        self.assertEqual(status, 202)
+        status, _ = self.request("GET", "/api/v1/vehicles", api_key="ingest-secret")
+        self.assertEqual(status, 403)
+        status, _ = self.request("GET", "/api/v1/vehicles", api_key="viewer-secret")
+        self.assertEqual(status, 200)
+        status, _ = self.request(
+            "POST",
+            "/api/v1/missions",
+            {"name": "Restricted mission"},
+            api_key="viewer-secret",
+        )
+        self.assertEqual(status, 403)
+        status, _ = self.request(
+            "POST",
+            "/api/v1/missions",
+            {"name": "Operator mission"},
+            api_key="operator-secret",
+        )
+        self.assertEqual(status, 201)
+        status, audit = self.request(
+            "GET", "/api/v1/security/audit", api_key="admin-secret"
+        )
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(len(audit["audit"]), 2)
+
+    def test_duplicate_role_keys_are_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "different key"):
+            create_server(
+                "127.0.0.1",
+                0,
+                Path(self.temp_directory.name) / "duplicate.sqlite3",
+                admin_key="same-secret",
+                viewer_key="same-secret",
+            )
+
+    def test_unauthenticated_network_listener_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "refusing unauthenticated"):
+            create_server("0.0.0.0", 0, Path(self.temp_directory.name) / "unsafe.sqlite3")
+
+    def test_client_certificate_requires_ca(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires --tls-ca"):
+            create_server(
+                "127.0.0.1",
+                0,
+                Path(self.temp_directory.name) / "mtls.sqlite3",
+                tls_cert=Path("server.pem"),
+                require_client_certificate=True,
+            )
 
 
 if __name__ == "__main__":
