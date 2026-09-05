@@ -79,6 +79,7 @@ jobs:
           $distDir = Join-Path $env:RUNNER_TEMP "flycam-dispatcher-dist"
           $workDir = Join-Path $env:RUNNER_TEMP "flycam-dispatcher-build"
           $specDir = Join-Path $env:RUNNER_TEMP "flycam-dispatcher-spec"
+          $sourceDir = (Resolve-Path "dispatcher").Path
           $webDir = (Resolve-Path "dispatcher/web").Path
           uv pip install --python python pyinstaller==6.16.0 -r dispatcher/requirements.txt
           if ($LASTEXITCODE -ne 0) {
@@ -90,6 +91,7 @@ jobs:
             --onefile `
             --noconsole `
             --name FlyCam-Dispatcher-Server `
+            --paths $sourceDir `
             --add-data "$webDir;web" `
             --distpath $distDir `
             --workpath $workDir `
