@@ -7,13 +7,16 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
 try:
     from .server import create_server, default_database_path
+    from .crypto import DataEncryptor
 except ImportError:
     from server import create_server, default_database_path
+    from crypto import DataEncryptor
 
 
 class DispatcherServerTest(unittest.TestCase):
@@ -96,6 +99,54 @@ class DispatcherServerTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(len(payload["vehicles"]), 1)
         self.assertEqual(payload["vehicles"][0]["vehicleId"], 1)
+
+    def test_encrypted_database_round_trip_and_no_plaintext_at_rest(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        database_path = Path(self.temp_directory.name) / "encrypted.sqlite3"
+        encryptor = DataEncryptor({"test-2026": bytes(range(32))}, "test-2026")
+        self.server = create_server(
+            "127.0.0.1",
+            0,
+            database_path,
+            "test-key",
+            data_encryptor=encryptor,
+            require_data_encryption=True,
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_port}"
+
+        status, health = self.request("GET", "/health", authorized=False)
+        self.assertEqual(status, 200)
+        self.assertTrue(health["dataAtRestEncryption"])
+        self.assertEqual(health["dataEncryptionProvider"], "aes-256-gcm")
+        self.assertEqual(health["activeDataKeyId"], "test-2026")
+
+        status, _ = self.request(
+            "POST",
+            "/api/v1/telemetry",
+            {"vehicleId": 1, "flightMode": "SecretMission", "latitude": 43.2389},
+        )
+        self.assertEqual(status, 202)
+        status, vehicles = self.request("GET", "/api/v1/vehicles")
+        self.assertEqual(status, 200)
+        self.assertEqual(vehicles["vehicles"][0]["flightMode"], "SecretMission")
+
+        with sqlite3.connect(database_path) as connection:
+            stored = connection.execute("SELECT payload FROM telemetry_latest").fetchone()[0]
+        self.assertTrue(stored.startswith("flycam:v1:test-2026:"))
+        self.assertNotIn("SecretMission", stored)
+
+    def test_required_data_encryption_refuses_missing_key(self) -> None:
+        with self.assertRaisesRegex(ValueError, "no data key"):
+            create_server(
+                "127.0.0.1",
+                0,
+                Path(self.temp_directory.name) / "required.sqlite3",
+                require_data_encryption=True,
+            )
 
     def test_multiple_vehicles_are_stored_independently(self) -> None:
         for vehicle_id, flight_mode in ((1, "Hold"), (2, "Mission"), (7, "Return")):
