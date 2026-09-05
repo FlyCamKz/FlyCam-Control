@@ -5,6 +5,7 @@
 | Несколько БПЛА | `DispatcherClient`, selector/group actions, dispatcher telemetry by `vehicleId` | Windows smoke test IDs 1/2; `test_multiple_vehicles_are_stored_independently` | стенд с уникальными `MAV_SYS_ID` |
 | Локальный диспетчер | `dispatcher/server.py`, SQLite, web UI | `dispatcher.test_server` и проверка установленного EXE | резервирование/экспорт по регламенту |
 | Защищённый канал | TLS 1.2+, системный CA, optional mTLS | проверки конфигурации; SEC-TLS-01/SEC-MTLS-01 на интеграционном стенде | сертифицированный криптопровайдер/шлюз |
+| Данные на диске | `dispatcher/crypto.py`, AES-256-GCM, versioned envelope и key ID | `dispatcher.test_crypto`; `test_encrypted_database_round_trip_and_no_plaintext_at_rest` | сертифицированный провайдер, KMS/HSM и миграция прежних строк |
 | Минимальные права | viewer/ingest/operator/admin keys | `test_role_scoped_keys_enforce_least_privilege` | выдача, ротация, отзыв и аппаратное хранение |
 | Аудит безопасности | `security_audit` SQLite | `test_api_requires_key` | защищённый экспорт в SIEM/WORM |
 | Люди/авто на видео | `analytics/video_analytics.py`, ONNX/OpenCV | `analytics.test_video_analytics` | камера, модель и измерение точности |
