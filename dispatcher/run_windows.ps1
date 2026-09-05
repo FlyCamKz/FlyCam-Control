@@ -11,6 +11,9 @@ param(
     [string]$TlsPrivateKey = $env:FLYCAM_TLS_KEY,
     [string]$TlsCa = $env:FLYCAM_TLS_CA,
     [switch]$RequireClientCertificate,
+    [string]$DataKeys = $env:FLYCAM_DATA_KEYS,
+    [string]$ActiveDataKey = $env:FLYCAM_ACTIVE_DATA_KEY,
+    [switch]$RequireDataEncryption,
     [string]$DatabasePath = ""
 )
 
@@ -61,6 +64,15 @@ if ($TlsCa) {
 }
 if ($RequireClientCertificate) {
     $serverArguments += "--require-client-cert"
+}
+if ($DataKeys) {
+    $env:FLYCAM_DATA_KEYS = $DataKeys
+}
+if ($ActiveDataKey) {
+    $env:FLYCAM_ACTIVE_DATA_KEY = $ActiveDataKey
+}
+if ($RequireDataEncryption) {
+    $serverArguments += "--require-data-encryption"
 }
 
 if (Get-Command py -ErrorAction SilentlyContinue) {
