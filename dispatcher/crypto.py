@@ -11,6 +11,7 @@ import base64
 import binascii
 import argparse
 import os
+import re
 from dataclasses import dataclass
 
 from cryptography.exceptions import InvalidTag
@@ -19,6 +20,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 ENVELOPE_PREFIX = "flycam:v1:"
 NONCE_BYTES = 12
 KEY_BYTES = 32
+KEY_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 class EncryptionConfigurationError(ValueError):
@@ -36,7 +38,9 @@ def _b64encode(value: bytes) -> str:
 def _b64decode(value: str) -> bytes:
     try:
         padding = "=" * (-len(value) % 4)
-        return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+        return base64.b64decode(
+            (value + padding).encode("ascii"), altchars=b"-_", validate=True
+        )
     except (UnicodeEncodeError, binascii.Error) as error:
         raise EncryptionConfigurationError("invalid base64 encryption key") from error
 
@@ -58,7 +62,7 @@ def parse_keyring(specification: str) -> dict[str, bytes]:
             raise EncryptionConfigurationError(
                 "FLYCAM_DATA_KEYS must contain key-id:base64-key entries"
             )
-        if not key_id.replace("-", "").replace("_", "").isalnum() or len(key_id) > 64:
+        if not KEY_ID_PATTERN.fullmatch(key_id):
             raise EncryptionConfigurationError("invalid encryption key identifier")
         if key_id in keyring:
             raise EncryptionConfigurationError(f"duplicate encryption key identifier: {key_id}")
@@ -81,7 +85,9 @@ class DataEncryptor:
             raise EncryptionConfigurationError("at least one encryption key is required")
         if self.active_key_id not in self.keys:
             raise EncryptionConfigurationError("active encryption key is not present in keyring")
-        for key in self.keys.values():
+        for key_id, key in self.keys.items():
+            if not KEY_ID_PATTERN.fullmatch(key_id):
+                raise EncryptionConfigurationError("invalid encryption key identifier")
             if len(key) != KEY_BYTES:
                 raise EncryptionConfigurationError("each encryption key must contain exactly 32 bytes")
 
