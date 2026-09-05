@@ -41,9 +41,13 @@ class DataEncryptorTest(unittest.TestCase):
     def test_ciphertext_tampering_is_detected(self) -> None:
         encryptor = DataEncryptor({"primary": bytes(range(32))}, "primary")
         encrypted = encryptor.encrypt_text("payload", context="events.payload")
-        replacement = "A" if encrypted[-1] != "A" else "B"
+        envelope, encoded_payload = encrypted.rsplit(":", maxsplit=1)
+        padding = "=" * (-len(encoded_payload) % 4)
+        payload = bytearray(base64.urlsafe_b64decode(encoded_payload + padding))
+        payload[-1] ^= 0x01
+        tampered_payload = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
         with self.assertRaises(DecryptionError):
-            encryptor.decrypt_text(encrypted[:-1] + replacement, context="events.payload")
+            encryptor.decrypt_text(f"{envelope}:{tampered_payload}", context="events.payload")
 
     def test_context_prevents_ciphertext_substitution(self) -> None:
         encryptor = DataEncryptor({"primary": bytes(range(32))}, "primary")
