@@ -2,7 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 COPY server.py /app/server.py
+COPY crypto.py /app/crypto.py
+COPY requirements.txt /app/requirements.txt
 COPY web /app/web
+
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
 ENV FLYCAM_HOST=0.0.0.0 \
     FLYCAM_PORT=8088 \
