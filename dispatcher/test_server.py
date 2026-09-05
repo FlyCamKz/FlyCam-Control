@@ -134,8 +134,11 @@ class DispatcherServerTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(vehicles["vehicles"][0]["flightMode"], "SecretMission")
 
-        with sqlite3.connect(database_path) as connection:
+        connection = sqlite3.connect(database_path)
+        try:
             stored = connection.execute("SELECT payload FROM telemetry_latest").fetchone()[0]
+        finally:
+            connection.close()
         self.assertTrue(stored.startswith("flycam:v1:test-2026:"))
         self.assertNotIn("SecretMission", stored)
 
