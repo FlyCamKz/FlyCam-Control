@@ -22,6 +22,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+try:
+    from .crypto import DataEncryptor, DecryptionError, encryptor_from_environment
+except ImportError:
+    from crypto import DataEncryptor, DecryptionError, encryptor_from_environment
+
 LOGGER = logging.getLogger("flycam.dispatcher")
 MAX_REQUEST_BYTES = 1024 * 1024
 MISSION_STATUSES = {"planned", "assigned", "in_progress", "completed", "cancelled"}
@@ -68,14 +73,42 @@ def configure_logging(database_path: Path) -> None:
 
 
 class Database:
-    def __init__(self, path: Path, retention_days: int = 30) -> None:
+    def __init__(
+        self,
+        path: Path,
+        retention_days: int = 30,
+        encryptor: DataEncryptor | None = None,
+    ) -> None:
         self.path = path
         self.retention_days = max(1, retention_days)
+        self.encryptor = encryptor
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._telemetry_insert_count = 0
         self._event_insert_count = 0
         self._detection_insert_count = 0
         self._initialize()
+
+    @property
+    def encryption_enabled(self) -> bool:
+        return self.encryptor is not None
+
+    @property
+    def encryption_provider(self) -> str | None:
+        return self.encryptor.provider_id if self.encryptor else None
+
+    @property
+    def active_key_id(self) -> str | None:
+        return self.encryptor.active_key_id if self.encryptor else None
+
+    def _protect(self, value: str | None, context: str) -> str | None:
+        if value is None or self.encryptor is None:
+            return value
+        return self.encryptor.encrypt_text(value, context=context)
+
+    def _unprotect(self, value: str | None, context: str) -> str | None:
+        if value is None or self.encryptor is None:
+            return value
+        return self.encryptor.decrypt_text(value, context=context)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10)
@@ -167,7 +200,10 @@ class Database:
     def store_telemetry(self, payload: dict[str, Any]) -> None:
         vehicle_id = int(payload["vehicleId"])
         received_at = utc_now()
-        payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        payload_json = self._protect(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            "telemetry.payload",
+        )
         with self._connection() as connection:
             connection.execute(
                 """
@@ -194,7 +230,10 @@ class Database:
                 "SELECT vehicle_id, received_at, payload FROM telemetry_latest ORDER BY vehicle_id"
             ).fetchall()
         return [
-            {**json.loads(row["payload"]), "receivedAt": row["received_at"]}
+            {
+                **json.loads(self._unprotect(row["payload"], "telemetry.payload")),
+                "receivedAt": row["received_at"],
+            }
             for row in rows
         ]
 
@@ -211,7 +250,10 @@ class Database:
                 (vehicle_id, limit),
             ).fetchall()
         return [
-            {**json.loads(row["payload"]), "receivedAt": row["received_at"]}
+            {
+                **json.loads(self._unprotect(row["payload"], "telemetry.payload")),
+                "receivedAt": row["received_at"],
+            }
             for row in rows
         ]
 
@@ -229,13 +271,13 @@ class Database:
                 (
                     now,
                     now,
-                    payload["name"],
+                    self._protect(payload["name"], "missions.name"),
                     status,
                     payload.get("vehicleId"),
-                    payload.get("origin"),
-                    payload.get("destination"),
+                    self._protect(payload.get("origin"), "missions.origin"),
+                    self._protect(payload.get("destination"), "missions.destination"),
                     payload.get("scheduledAt"),
-                    payload.get("notes"),
+                    self._protect(payload.get("notes"), "missions.notes"),
                 ),
             )
             mission_id = int(cursor.lastrowid)
@@ -246,12 +288,12 @@ class Database:
             row = connection.execute("SELECT * FROM missions WHERE id = ?", (mission_id,)).fetchone()
         if row is None:
             raise KeyError(mission_id)
-        return _mission_row(row)
+        return self._mission_row(row)
 
     def list_missions(self) -> list[dict[str, Any]]:
         with self._connection() as connection:
             rows = connection.execute("SELECT * FROM missions ORDER BY id DESC").fetchall()
-        return [_mission_row(row) for row in rows]
+        return [self._mission_row(row) for row in rows]
 
     def update_mission(self, mission_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         allowed_fields = {
@@ -268,7 +310,10 @@ class Database:
         for api_name, column_name in allowed_fields.items():
             if api_name in payload:
                 updates.append(f"{column_name} = ?")
-                values.append(payload[api_name])
+                value = payload[api_name]
+                if api_name in {"name", "origin", "destination", "notes"}:
+                    value = self._protect(value, f"missions.{column_name}")
+                values.append(value)
         if not updates:
             return self.get_mission(mission_id)
 
@@ -286,7 +331,10 @@ class Database:
     def store_event(self, payload: dict[str, Any]) -> dict[str, Any]:
         received_at = utc_now()
         event_type = str(payload.get("eventType", "operator-event"))
-        payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        payload_json = self._protect(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            "events.payload",
+        )
         with self._connection() as connection:
             cursor = connection.execute(
                 "INSERT INTO events(received_at, vehicle_id, event_type, payload) VALUES (?, ?, ?, ?)",
@@ -304,7 +352,11 @@ class Database:
                 "SELECT id, received_at, payload FROM events ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
         return [
-            {"id": row["id"], "receivedAt": row["received_at"], **json.loads(row["payload"])}
+            {
+                "id": row["id"],
+                "receivedAt": row["received_at"],
+                **json.loads(self._unprotect(row["payload"], "events.payload")),
+            }
             for row in rows
         ]
 
@@ -322,7 +374,12 @@ class Database:
                         (vehicle_id,),
                     ).fetchone()
                     telemetry_cache[vehicle_id] = (
-                        (json.loads(telemetry_row["payload"]), telemetry_row["received_at"])
+                        (
+                            json.loads(
+                                self._unprotect(telemetry_row["payload"], "telemetry.payload")
+                            ),
+                            telemetry_row["received_at"],
+                        )
                         if telemetry_row
                         else None
                     )
@@ -334,8 +391,9 @@ class Database:
                             enriched_detection[field] = telemetry_payload[field]
                     enriched_detection.setdefault("telemetryReceivedAt", telemetry_received_at)
 
-                payload_json = json.dumps(
-                    enriched_detection, ensure_ascii=False, separators=(",", ":")
+                payload_json = self._protect(
+                    json.dumps(enriched_detection, ensure_ascii=False, separators=(",", ":")),
+                    "detections.payload",
                 )
                 cursor = connection.execute(
                     """
@@ -384,7 +442,11 @@ class Database:
                 values,
             ).fetchall()
         return [
-            {"id": row["id"], "receivedAt": row["received_at"], **json.loads(row["payload"])}
+            {
+                "id": row["id"],
+                "receivedAt": row["received_at"],
+                **json.loads(self._unprotect(row["payload"], "detections.payload")),
+            }
             for row in rows
         ]
 
@@ -414,7 +476,7 @@ class Database:
                     action[:100],
                     outcome[:32],
                     role[:32] if role else None,
-                    detail[:500] if detail else None,
+                    self._protect(detail[:500], "security_audit.detail") if detail else None,
                 ),
             )
 
@@ -433,7 +495,7 @@ class Database:
                 "action": row["action"],
                 "outcome": row["outcome"],
                 "role": row["role"],
-                "detail": row["detail"],
+                "detail": self._unprotect(row["detail"], "security_audit.detail"),
             }
             for row in rows
         ]
@@ -445,20 +507,19 @@ class Database:
         connection.execute("DELETE FROM detections WHERE received_at < ?", (cutoff,))
         connection.execute("DELETE FROM security_audit WHERE occurred_at < ?", (cutoff,))
 
-
-def _mission_row(row: sqlite3.Row) -> dict[str, Any]:
-    return {
-        "id": row["id"],
-        "createdAt": row["created_at"],
-        "updatedAt": row["updated_at"],
-        "name": row["name"],
-        "status": row["status"],
-        "vehicleId": row["vehicle_id"],
-        "origin": row["origin"],
-        "destination": row["destination"],
-        "scheduledAt": row["scheduled_at"],
-        "notes": row["notes"],
-    }
+    def _mission_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+            "name": self._unprotect(row["name"], "missions.name"),
+            "status": row["status"],
+            "vehicleId": row["vehicle_id"],
+            "origin": self._unprotect(row["origin"], "missions.origin"),
+            "destination": self._unprotect(row["destination"], "missions.destination"),
+            "scheduledAt": row["scheduled_at"],
+            "notes": self._unprotect(row["notes"], "missions.notes"),
+        }
 
 
 def _validate_telemetry(payload: Any) -> dict[str, Any]:
@@ -630,6 +691,9 @@ class DispatcherRequestHandler(BaseHTTPRequestHandler):
                     "timeUtc": utc_now(),
                     "tls": self.tls_enabled,
                     "clientCertificateRequired": self.client_certificate_required,
+                    "dataAtRestEncryption": self.database.encryption_enabled,
+                    "dataEncryptionProvider": self.database.encryption_provider,
+                    "activeDataKeyId": self.database.active_key_id,
                 },
             )
             return
@@ -873,6 +937,8 @@ def create_server(
     tls_ca: Path | None = None,
     require_client_certificate: bool = False,
     allow_insecure_network: bool = False,
+    data_encryptor: DataEncryptor | None = None,
+    require_data_encryption: bool = False,
 ) -> ThreadingHTTPServer:
     api_keys = tuple(
         (role, key)
@@ -894,6 +960,8 @@ def create_server(
         raise ValueError("client certificate options require --tls-cert")
     if require_client_certificate and not tls_ca:
         raise ValueError("--require-client-cert requires --tls-ca")
+    if require_data_encryption and data_encryptor is None:
+        raise ValueError("data-at-rest encryption is required but no data key is configured")
     if (
         not _is_loopback_host(host)
         and not api_keys
@@ -904,7 +972,7 @@ def create_server(
             "refusing unauthenticated non-loopback listener; configure an API key or mTLS"
         )
 
-    database = Database(database_path, retention_days)
+    database = Database(database_path, retention_days, encryptor=data_encryptor)
     web_root = Path(__file__).resolve().parent / "web"
 
     class ConfiguredHandler(DispatcherRequestHandler):
@@ -966,6 +1034,12 @@ def parse_args() -> argparse.Namespace:
         help="allow a non-loopback listener without API keys (unsafe; isolated test networks only)",
     )
     parser.add_argument(
+        "--require-data-encryption",
+        action="store_true",
+        default=_env_flag("FLYCAM_REQUIRE_DATA_ENCRYPTION"),
+        help="refuse startup unless FLYCAM_DATA_KEYS configures encryption at rest",
+    )
+    parser.add_argument(
         "--retention-days",
         type=int,
         default=int(os.getenv("FLYCAM_RETENTION_DAYS", "30")),
@@ -977,6 +1051,7 @@ def main() -> None:
     args = parse_args()
     configure_logging(args.db)
     try:
+        data_encryptor = encryptor_from_environment()
         server = create_server(
             args.host,
             args.port,
@@ -992,6 +1067,8 @@ def main() -> None:
             tls_ca=args.tls_ca,
             require_client_certificate=args.require_client_cert,
             allow_insecure_network=args.allow_insecure_network,
+            data_encryptor=data_encryptor,
+            require_data_encryption=args.require_data_encryption,
         )
     except (OSError, ssl.SSLError, ValueError) as error:
         raise SystemExit(f"Dispatcher configuration error: {error}") from error
