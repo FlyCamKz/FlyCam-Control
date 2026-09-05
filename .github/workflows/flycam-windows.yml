@@ -194,7 +194,10 @@ jobs:
             -WindowStyle Hidden -PassThru
           try {
             $health = $null
-            for ($attempt = 0; $attempt -lt 40; $attempt++) {
+            for ($attempt = 0; $attempt -lt 120; $attempt++) {
+              if ($dispatcherProcess.HasExited) {
+                break
+              }
               try {
                 $health = Invoke-RestMethod -Uri "http://127.0.0.1:18088/health" -TimeoutSec 1
                 break
@@ -203,7 +206,17 @@ jobs:
               }
             }
             if (-not $health -or $health.status -ne "ok") {
-              throw "FlyCam dispatcher health check failed"
+              $dispatcherLog = Join-Path $dispatcherTestDir "flycam-dispatcher.log"
+              if (Test-Path $dispatcherLog) {
+                Write-Host "FlyCam dispatcher log:"
+                Get-Content $dispatcherLog
+              }
+              $exitDetail = if ($dispatcherProcess.HasExited) {
+                " process exited with code $($dispatcherProcess.ExitCode)"
+              } else {
+                " process did not become ready before the timeout"
+              }
+              throw "FlyCam dispatcher health check failed;$exitDetail"
             }
 
             $dashboard = Invoke-WebRequest -Uri "http://127.0.0.1:18088/" -TimeoutSec 2
