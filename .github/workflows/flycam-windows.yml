@@ -65,9 +65,13 @@ jobs:
           build-type: Release
           cache-variant: flycam
 
-      - name: Test dispatcher and analytics metadata
+      - name: Install dispatcher encryption dependency
         shell: pwsh
-        run: python -m unittest -v dispatcher.test_server analytics.test_video_analytics
+        run: uv pip install --python python -r dispatcher/requirements.txt
+
+      - name: Test dispatcher, encryption and analytics metadata
+        shell: pwsh
+        run: python -m unittest -v dispatcher.test_crypto dispatcher.test_server analytics.test_video_analytics
 
       - name: Package dispatcher server
         shell: pwsh
@@ -76,7 +80,11 @@ jobs:
           $workDir = Join-Path $env:RUNNER_TEMP "flycam-dispatcher-build"
           $specDir = Join-Path $env:RUNNER_TEMP "flycam-dispatcher-spec"
           $webDir = (Resolve-Path "dispatcher/web").Path
-          uv tool run --from pyinstaller==6.16.0 pyinstaller `
+          uv pip install --python python pyinstaller==6.16.0 -r dispatcher/requirements.txt
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          python -m PyInstaller `
             --clean `
             --noconfirm `
             --onefile `
