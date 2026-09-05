@@ -73,6 +73,10 @@ class DataEncryptorTest(unittest.TestCase):
             parse_keyring("primary:" + base64.urlsafe_b64encode(b"short").decode("ascii"))
         with self.assertRaises(EncryptionConfigurationError):
             parse_keyring(f"primary:{encoded_key(1)},primary:{encoded_key(2)}")
+        with self.assertRaises(EncryptionConfigurationError):
+            parse_keyring(f"ключ:{encoded_key(1)}")
+        with self.assertRaises(EncryptionConfigurationError):
+            parse_keyring("primary:not-base64!")
 
     def test_environment_requires_active_id_for_multiple_keys(self) -> None:
         environment = {
