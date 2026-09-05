@@ -12,6 +12,8 @@ set(CUSTOM_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/DispatcherClient.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/FlyCamPlugin.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/src/FlyCamPlugin.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/FlyCamSplashScreen.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/FlyCamSplashScreen.h
     CACHE INTERNAL "" FORCE
 )
 

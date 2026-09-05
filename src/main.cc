@@ -4,6 +4,14 @@
 #include "QGCLoggingCategory.h"
 #include "Platform.h"
 
+#ifdef QGC_CUSTOM_BUILD
+    #include <memory>
+
+    #include <QtCore/QTimer>
+
+    #include "FlyCamSplashScreen.h"
+#endif
+
 #ifdef QGC_UNITTEST_BUILD
     #include "UnitTestList.h"
 #endif
@@ -25,11 +33,27 @@ int main(int argc, char *argv[])
 
     QGCApplication app(argc, argv, args);
 
+#ifdef QGC_CUSTOM_BUILD
+    std::unique_ptr<FlyCamSplashScreen> flyCamSplash;
+    if (!app.runningUnitTests() && !app.simpleBootTest()) {
+        flyCamSplash = std::make_unique<FlyCamSplashScreen>();
+        flyCamSplash->show();
+        app.processEvents();
+    }
+#endif
+
     LogManager::installHandler(args.logOutput);
 
     Platform::setupPostApp();
 
     app.init();
+
+#ifdef QGC_CUSTOM_BUILD
+    if (flyCamSplash) {
+        FlyCamSplashScreen *const splashWindow = flyCamSplash.get();
+        QTimer::singleShot(800, splashWindow, [splashWindow]() { splashWindow->close(); });
+    }
+#endif
 
     // Apply after installFilter() (called during app.init) so rules aren't overwritten.
     LogManager::applyEnvironmentLogLevel();
